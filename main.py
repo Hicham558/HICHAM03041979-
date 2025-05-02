@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 import psycopg2
 import os
 
-app = Flask(__KHELLADIHICHAMAPI__)
+app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("postgresql://postgres:xKPAiwKoPilwkcgVKECAteEefoDIWIwu@shuttle.proxy.rlwy.net:31746/railway")
 
@@ -53,5 +53,5 @@ def liste_clients():
 
     return jsonify(clients)
 
-if __name__ == '__KHELLADIHICHAMAPI__':
+if __name__ == '__name__':
     app.run(debug=True, port=31746)
