@@ -46,7 +46,7 @@ def liste_clients():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_clt, nom, solde, rin FROM client")
+        cur.execute("SELECT numero_clt, nom, solde, ref FROM client")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -58,7 +58,7 @@ def liste_clients():
                 'numero_clt': row[0],
                 'nom': row[1],
                 'solde': row[2],
-                'rin': row[3]
+                'ref': row[3]
             })
 
         return jsonify(clients)
