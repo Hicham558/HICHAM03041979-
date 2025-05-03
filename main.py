@@ -25,15 +25,15 @@ def ajouter_client():
     data = request.get_json()
     nom = data.get('nom')
     solde = data.get('solde')
-    rin = data.get('rin')
+    rin = data.get('reference')
 
-    if not all([nom, solde, rin]):
+    if not all([nom, solde, reference]):
         return jsonify({'erreur': 'Champs manquants'}), 400
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO client (nom, solde, rin) VALUES (%s, %s, %s)", (nom, solde, rin))
+        cur.execute("INSERT INTO client (nom, solde, reference) VALUES (%s, %s, %s)", (nom, solde, reference))
         conn.commit()
         cur.close()
         conn.close()
@@ -46,7 +46,7 @@ def liste_clients():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_clt, nom, solde, ref FROM client")
+        cur.execute("SELECT numero_clt, nom, solde, reference FROM client")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -58,7 +58,7 @@ def liste_clients():
                 'numero_clt': row[0],
                 'nom': row[1],
                 'solde': row[2],
-                'ref': row[3]
+                'reference': row[3]
             })
 
         return jsonify(clients)
