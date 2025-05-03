@@ -41,5 +41,30 @@ def ajouter_client():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/liste_clients', methods=['GET'])
+def liste_clients():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT numero_clt, nom, solde, rin FROM client")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Convertir en liste de dictionnaires
+        clients = []
+        for row in rows:
+            clients.append({
+                'numero_clt': row[0],
+                'nom': row[1],
+                'solde': row[2],
+                'rin': row[3]
+            })
+
+        return jsonify(clients)
+
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+        
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
