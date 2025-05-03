@@ -3,55 +3,40 @@ import psycopg2
 import os
 
 app = Flask(__name__)
+app.debug = True  # Pour voir les erreurs
 
-DATABASE_URL = os.environ.get("postgresql://postgres:xKPAiwKoPilwkcgVKECAteEefoDIWIwu@shuttle.proxy.rlwy.net:31746/railway")
-
-def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+def get_conn():
+    return psycopg2.connect(os.environ['postgresql://postgres:xKPAiwKoPilwkcgVKECAteEefoDIWIwu@shuttle.proxy.rlwy.net:31746/railway'])
 
 @app.route('/')
 def index():
-    return 'API Clients opérationnelle'
+    try:
+        conn = get_conn()
+        conn.close()
+        return 'API en ligne - Connexion DB OK'
+    except Exception as e:
+        return f'Erreur connexion DB : {e}'
 
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
     data = request.get_json()
-    numero = data.get('numero_clt')
     nom = data.get('nom')
     solde = data.get('solde')
     rin = data.get('rin')
 
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO client (numero_clt, nom, solde, ref)
-        VALUES (%s, %s, %s, %s)
-    """, (numero_clt, nom, solde, ref))
-    conn.commit()
-    cur.close()
-    conn.close()
+    if not all([nom, solde, rin]):
+        return jsonify({'erreur': 'Champs manquants'}), 400
 
-    return jsonify({"status": "Client ajouté avec succès"})
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO client (nom, solde, rin) VALUES (%s, %s, %s)", (nom, solde, rin))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Client ajouté'})
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
 
-@app.route('/liste_clients', methods=['GET'])
-def liste_clients():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT numero_clt, nom, solde, ref FROM client")
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    clients = []
-    for row in rows:
-        clients.append({
-            "numero_clt": row[0],
-            "nom": row[1],
-            "solde": row[2],
-            "ref": row[3]
-        })
-
-    return jsonify(clients)
-
-if __name__ == '__name__':
-    app.run(debug=True, port=31746)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
