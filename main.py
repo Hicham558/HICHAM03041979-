@@ -25,7 +25,7 @@ def ajouter_client():
     data = request.get_json()
     nom = data.get('nom')
     solde = data.get('solde')
-    rin = data.get('reference')
+    reference = data.get('reference')
 
     if not all([nom, solde, reference]):
         return jsonify({'erreur': 'Champs manquants'}), 400
