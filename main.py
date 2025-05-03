@@ -6,7 +6,10 @@ app = Flask(__name__)
 app.debug = True  # Pour voir les erreurs
 
 def get_conn():
-    return psycopg2.connect(os.environ[postgresql://postgres:xKPAiwKoPilwkcgVKECAteEefoDIWIwu@postgres.railway.internal:5432/railway])
+    url = os.environ['DATABASE_URL']
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(url, sslmode='require')
 
 @app.route('/')
 def index():
