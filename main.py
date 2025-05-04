@@ -16,7 +16,7 @@ def index():
     try:
         conn = get_conn()
         conn.close()
-        return 'API en ligne - Connexion DB OK'
+        return 'API en ligne - Connexion posgresql OK'
     except Exception as e:
         return f'Erreur connexion DB : {e}'
 
