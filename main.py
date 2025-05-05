@@ -45,7 +45,7 @@ def liste_produits():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix FROM produits")
+        cur.execute("SELECT numero_item, bar, designation, qte, prix FROM item")
         rows = cur.fetchall()
         cur.close()
         conn.close()
