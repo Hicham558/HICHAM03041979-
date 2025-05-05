@@ -40,6 +40,30 @@ def ajouter_client():
         return jsonify({'statut': 'Client ajouté'})
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+@app.route('/liste_produits', methods=['GET'])
+def liste_produits():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT numero_item, bar, designation, qte, prix FROM produits")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        produits = []
+        for row in rows:
+            produits.append({
+                'NUMERO_ITEM': row[0],
+                'BAR': row[1],
+                'DESIGNATION': row[2],
+                'QTE': row[3],
+                'PRIX': row[4]
+            })
+
+        return jsonify(produits)
+
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
 
 @app.route('/liste_clients', methods=['GET'])
 def liste_clients():
