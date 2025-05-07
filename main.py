@@ -91,6 +91,33 @@ def liste_clients():
 
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_item', methods=['POST'])
+def ajouter_item():
+    # Récupérer les données JSON de la requête
+    data = request.get_json()
+    designation = data.get('designation')
+    bar = data.get('bar')
+    prix = data.get('prix')
+    qte = data.get('qte')
+
+    # Vérifier que tous les champs sont présents
+    if not all([designation, bar, prix, qte]):
+        return jsonify({'erreur': 'Champs manquants'}), 400
+
+    try:
+        # Établir une connexion à la base de données (assurez-vous que get_conn() existe)
+        conn = get_conn()
+        cur = conn.cursor()
+        # Insérer les données sans numero_item (auto-incrémenté)
+        cur.execute("INSERT INTO item (designation, bar, prix, qte) VALUES (%s, %s, %s, %s)", 
+                    (designation, bar, prix, qte))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Item ajouté'})
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
         
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
