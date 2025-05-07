@@ -1,8 +1,9 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify,CORS
 import psycopg2
 import os
 
 app = Flask(__name__)
+CORS(app)
 app.debug = True  # Pour voir les erreurs
 
 def get_conn():
