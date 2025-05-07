@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 import psycopg2
-import os
+import os 
 
 app = Flask(__name__)
 app.debug = True  # Pour voir les erreurs
