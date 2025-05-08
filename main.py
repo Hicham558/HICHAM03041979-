@@ -28,20 +28,24 @@ def ajouter_client():
     nom = data.get('nom')
     solde = data.get('solde')
     reference = data.get('reference')
+    contact = data.get('contact')  # Nouveau champ
+    adresse = data.get('adresse')  # Nouveau champ
 
     if not all([nom, solde, reference]):
-        return jsonify({'erreur': 'Champs manquants'}), 400
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, solde, reference)'}), 400
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO client (nom, solde, reference) VALUES (%s, %s, %s)", (nom, solde, reference))
+        cur.execute("INSERT INTO client (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s)", 
+                    (nom, solde, reference, contact, adresse))
         conn.commit()
         cur.close()
         conn.close()
         return jsonify({'statut': 'Client ajouté'})
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
     try:
@@ -72,7 +76,7 @@ def liste_clients():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_clt, nom, solde, reference FROM client")
+        cur.execute("SELECT numero_clt, nom, solde, reference, contact, adresse FROM client")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -84,7 +88,9 @@ def liste_clients():
                 'numero_clt': row[0],
                 'nom': row[1],
                 'solde': row[2],
-                'reference': row[3]
+                'reference': row[3],
+                'contact': row[4],  # Nouveau champ
+                'adresse': row[5]   # Nouveau champ
             })
 
         return jsonify(clients)
@@ -106,7 +112,7 @@ def ajouter_item():
         return jsonify({'erreur': 'Champs manquants'}), 400
 
     try:
-        # Établir une connexion à la base de données (assurez-vous que get_conn() existe)
+        # Établir une connexion à la base de données
         conn = get_conn()
         cur = conn.cursor()
         # Insérer les données sans numero_item (auto-incrémenté)
@@ -124,7 +130,7 @@ def liste_fournisseurs():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_fou, nom, solde, reference FROM fournisseur")
+        cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur")
         fournisseurs = []
         colonnes = [desc[0] for desc in cur.description]
         for row in cur.fetchall():
@@ -142,14 +148,17 @@ def ajouter_fournisseur():
     nom = data.get('nom')
     solde = data.get('solde')
     reference = data.get('reference')
+    contact = data.get('contact')  # Nouveau champ
+    adresse = data.get('adresse')  # Nouveau champ
 
     if not all([nom, solde, reference]):
-        return jsonify({'erreur': 'Champs manquants'}), 400
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, solde, reference)'}), 400
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO fournisseur (nom, solde, reference) VALUES (%s, %s, %s)", (nom, solde, reference))
+        cur.execute("INSERT INTO fournisseur (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s)", 
+                    (nom, solde, reference, contact, adresse))
         conn.commit()
         cur.close()
         conn.close()
