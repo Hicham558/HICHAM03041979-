@@ -118,6 +118,44 @@ def ajouter_item():
         return jsonify({'statut': 'Item ajouté'})
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+
+@app.route('/liste_fournisseurs', methods=['GET'])
+def liste_fournisseurs():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT numero_frs, nom, solde, reference FROM fournisseur")
+        fournisseurs = []
+        colonnes = [desc[0] for desc in cur.description]
+        for row in cur.fetchall():
+            fournisseurs.append(dict(zip(colonnes, row)))
+        cur.close()
+        conn.close()
+        return jsonify(fournisseurs)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+# Endpoint pour ajouter un fournisseur
+@app.route('/ajouter_fournisseur', methods=['POST'])
+def ajouter_fournisseur():
+    data = request.get_json()
+    nom = data.get('nom')
+    solde = data.get('solde')
+    reference = data.get('reference')
+
+    if not all([nom, solde, reference]):
+        return jsonify({'erreur': 'Champs manquants'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO fournisseur (nom, solde, reference) VALUES (%s, %s, %s)", (nom, solde, reference))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Fournisseur ajouté'})
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
         
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
