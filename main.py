@@ -124,7 +124,7 @@ def liste_fournisseurs():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_four, nom, solde, reference FROM fournisseur")
+        cur.execute("SELECT numero_fou, nom, solde, reference FROM fournisseur")
         fournisseurs = []
         colonnes = [desc[0] for desc in cur.description]
         for row in cur.fetchall():
