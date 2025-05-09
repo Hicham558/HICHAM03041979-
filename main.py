@@ -312,9 +312,8 @@ where
 item.numero_item=attache.numero_item 
 and
 comande.user_id = %s
-        
         '''
-        cursor.execute(query, ('vente', user_id))
+        cursor.execute(query, (user_id))
         ventes = cursor.fetchall()
 
         ventes_list = []
