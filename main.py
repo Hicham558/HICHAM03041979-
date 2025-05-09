@@ -41,107 +41,178 @@ def home():
     })
 
 # --- Clients ---
-@app.route('/clients', methods=['GET', 'POST'])
-def gestion_clients():
+@app.route('/liste_clients', methods=['GET'])
+def liste_clients():
     user_id = request.headers.get('X-User-ID')
     if error := validate_user_id(user_id):
         return error
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if request.method == 'GET':
-                cur.execute("""
-                    SELECT numero_clt, nom, solde, reference, contact, adresse 
-                    FROM client WHERE user_id = %s ORDER BY nom
-                """, (user_id,))
-                
-                clients = [{
-                    'id': row[0],
-                    'nom': row[1],
-                    'solde': float_to_str(row[2]),
-                    'reference': row[3],
-                    'contact': row[4] or '',
-                    'adresse': row[5] or ''
-                } for row in cur.fetchall()]
-                
-                return jsonify(clients)
+            cur.execute("""
+                SELECT numero_clt, nom, solde, reference, contact, adresse 
+                FROM client WHERE user_id = %s ORDER BY nom
+            """, (user_id,))
+            
+            clients = [{
+                'numero_clt': row[0],
+                'nom': row[1],
+                'solde': float_to_str(row[2]),
+                'reference': row[3],
+                'contact': row[4] or '',
+                'adresse': row[5] or ''
+            } for row in cur.fetchall()]
+            
+            return jsonify(clients)
 
-            elif request.method == 'POST':
-                data = request.get_json()
-                required = ['nom', 'solde', 'reference']
-                if not all(k in data for k in required):
-                    return jsonify({'error': 'Champs manquants'}), 400
+@app.route('/ajouter_client', methods=['POST'])
+def ajouter_client():
+    user_id = request.headers.get('X-User-ID')
+    if error := validate_user_id(user_id):
+        return error
 
-                cur.execute("""
-                    INSERT INTO client 
-                    (nom, solde, reference, contact, adresse, user_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    RETURNING numero_clt
-                """, (
-                    data['nom'],
-                    float(data['solde']),
-                    data['reference'],
-                    data.get('contact'),
-                    data.get('adresse'),
-                    user_id
-                ))
-                
-                client_id = cur.fetchone()[0]
-                conn.commit()
-                return jsonify({'id': client_id}), 201
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            data = request.get_json()
+            required = ['nom', 'solde', 'reference']
+            if not all(k in data for k in required):
+                return jsonify({'error': 'Champs manquants'}), 400
+
+            cur.execute("""
+                INSERT INTO client 
+                (nom, solde, reference, contact, adresse, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING numero_clt
+            """, (
+                data['nom'],
+                float(data['solde']),
+                data['reference'],
+                data.get('contact'),
+                data.get('adresse'),
+                user_id
+            ))
+            
+            client_id = cur.fetchone()[0]
+            conn.commit()
+            return jsonify({'id': client_id}), 201
+
+# --- Fournisseurs ---
+# Note : Ton front-end appelle /liste_fournisseurs et /ajouter_fournisseur, mais ils ne sont pas définis.
+# Ajoutons des routes fictives pour éviter des erreurs 404 (à compléter selon ton schéma de base de données).
+@app.route('/liste_fournisseurs', methods=['GET'])
+def liste_fournisseurs():
+    user_id = request.headers.get('X-User-ID')
+    if error := validate_user_id(user_id):
+        return error
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            # Remplace ceci par ta requête SQL pour les fournisseurs
+            cur.execute("""
+                SELECT numero_fou, nom, solde, reference, contact, adresse 
+                FROM fournisseur WHERE user_id = %s ORDER BY nom
+            """, (user_id,))
+            
+            fournisseurs = [{
+                'numero_fou': row[0],
+                'nom': row[1],
+                'solde': float_to_str(row[2]),
+                'reference': row[3],
+                'contact': row[4] or '',
+                'adresse': row[5] or ''
+            } for row in cur.fetchall()]
+            
+            return jsonify(fournisseurs)
+
+@app.route('/ajouter_fournisseur', methods=['POST'])
+def ajouter_fournisseur():
+    user_id = request.headers.get('X-User-ID')
+    if error := validate_user_id(user_id):
+        return error
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            data = request.get_json()
+            required = ['nom', 'solde', 'reference']
+            if not all(k in data for k in required):
+                return jsonify({'error': 'Champs manquants'}), 400
+
+            cur.execute("""
+                INSERT INTO fournisseur 
+                (nom, solde, reference, contact, adresse, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING numero_fou
+            """, (
+                data['nom'],
+                float(data['solde']),
+                data['reference'],
+                data.get('contact'),
+                data.get('adresse'),
+                user_id
+            ))
+            
+            fournisseur_id = cur.fetchone()[0]
+            conn.commit()
+            return jsonify({'id': fournisseur_id}), 201
 
 # --- Produits ---
-@app.route('/produits', methods=['GET', 'POST'])
-def gestion_produits():
+@app.route('/liste_produits', methods=['GET'])
+def liste_produits():
     user_id = request.headers.get('X-User-ID')
     if error := validate_user_id(user_id):
         return error
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            if request.method == 'GET':
-                cur.execute("""
-                    SELECT bar, designation, prix, qte, prixba 
-                    FROM item WHERE user_id = %s ORDER BY designation
-                """, (user_id,))
-                
-                produits = [{
-                    'code': row[0],
-                    'designation': row[1],
-                    'prix': float_to_str(row[2]),
-                    'quantite': row[3],
-                    'prix_achat': float_to_str(row[4])
-                } for row in cur.fetchall()]
-                
-                return jsonify(produits)
+            cur.execute("""
+                SELECT bar, designation, prix, qte, prixba 
+                FROM item WHERE user_id = %s ORDER BY designation
+            """, (user_id,))
+            
+            produits = [{
+                'BAR': row[0],
+                'DESIGNATION': row[1],
+                'PRIX': float_to_str(row[2]),
+                'QTE': row[3],
+                'PRIXBA': float_to_str(row[4])
+            } for row in cur.fetchall()]
+            
+            return jsonify(produits)
 
-            elif request.method == 'POST':
-                data = request.get_json()
-                required = ['code', 'designation', 'prix', 'quantite']
-                if not all(k in data for k in required):
-                    return jsonify({'error': 'Champs manquants'}), 400
+@app.route('/ajouter_item', methods=['POST'])
+def ajouter_item():
+    user_id = request.headers.get('X-User-ID')
+    if error := validate_user_id(user_id):
+        return error
 
-                # Vérification doublon
-                cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", 
-                          (data['code'], user_id))
-                if cur.fetchone():
-                    return jsonify({'error': 'Produit existe déjà'}), 409
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            data = request.get_json()
+            required = ['bar', 'designation', 'prix', 'qte']
+            if not all(k in data for k in required):
+                return jsonify({'error': 'Champs manquants'}), 400
 
-                cur.execute("""
-                    INSERT INTO item 
-                    (bar, designation, prix, qte, prixba, user_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    data['code'],
-                    data['designation'],
-                    float(data['prix']),
-                    int(data['quantite']),
-                    float(data.get('prix_achat', 0)),
-                    user_id
-                ))
-                
-                conn.commit()
-                return jsonify({'status': 'created'}), 201
+            # Vérification doublon
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", 
+                        (data['bar'], user_id))
+            if cur.fetchone():
+                return jsonify({'error': 'Produit existe déjà'}), 409
+
+            cur.execute("""
+                INSERT INTO item 
+                (bar, designation, prix, qte, prixba, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                data['bar'],
+                data['designation'],
+                float(data['prix']),
+                int(data['qte']),
+                float(data.get('prixba', 0)),
+                user_id
+            ))
+            
+            conn.commit()
+            return jsonify({'status': 'created'}), 201
 
 # --- Ventes ---
 @app.route('/ventes', methods=['GET', 'POST'])
@@ -203,7 +274,8 @@ def gestion_ventes():
                     VALUES (%s, NOW(), 'en_cours', %s)
                     RETURNING numero_comande
                 """, (data['client_id'], user_id))
-                
+不受
+
                 commande_id = cur.fetchone()[0]
 
                 # Enregistrement vente
