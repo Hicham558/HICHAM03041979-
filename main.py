@@ -173,5 +173,107 @@ def liste_fournisseurs():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/ajouter_vente', methods=['POST'])
+def ajouter_vente():
+    data = request.get_json()
+    client_id = data.get('client_id')
+    produit_bar = data.get('produit_bar')
+    quantite = data.get('quantite')
+    prixt = data.get('prixt')
+    remarque = data.get('remarque')
+    prixbh = data.get('prixbh')
+    numero_util = data.get('numero_util')
+    etat_c = data.get('etat_c')
+    nature = data.get('nature')
+    user_id = request.headers.get('X-User-ID')
+
+    if not all([produit_bar, quantite, prixt, remarque, user_id]):
+        return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        # Vérifier si le produit existe et si la quantité est suffisante
+        cur.execute("SELECT qte, prix FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
+        produit = cur.fetchone()
+        if not produit:
+            return jsonify({'erreur': 'Produit introuvable'}), 404
+        if produit[0] < quantite:
+            return jsonify({'erreur': 'Quantité insuffisante en stock'}), 400
+
+        # Vérifier si le client existe (si spécifié)
+        if client_id:
+            cur.execute("SELECT numero_clt FROM client WHERE numero_clt = %s AND user_id = %s", (client_id, user_id))
+            if not cur.fetchone():
+                return jsonify({'erreur': 'Client introuvable'}), 404
+
+        # Créer une nouvelle commande
+        cur.execute(
+            "INSERT INTO comande (numero_table, date_comande, etat_c, numero_util, nature, user_id) "
+            "VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s) RETURNING numero_comande",
+            (client_id, etat_c, numero_util, nature, user_id)
+        )
+        numero_comande = cur.fetchone()[0]
+
+        # Ajouter la ligne de vente (attache)
+        cur.execute(
+            "INSERT INTO attache (numero_item, quantite, prixt, remarque, send, numero_comande, prixbh, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (produit_bar, quantite, prixt, remarque, False, numero_comande, prixbh, user_id)
+        )
+
+        # Mettre à jour le stock
+        cur.execute("UPDATE item SET qte = qte - %s WHERE bar = %s AND user_id = %s", (quantite, produit_bar, user_id))
+
+        # Mettre à jour le solde du client (si spécifié)
+        if client_id:
+            cur.execute("UPDATE client SET solde = solde + %s WHERE numero_clt = %s AND user_id = %s", 
+                       (float(prixt), client_id, user_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Vente enregistrée', 'numero_comande': numero_comande})
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/liste_ventes', methods=['GET'])
+def liste_ventes():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT a.numero_attache, a.numero_comande, i.designation, a.quantite, a.prixt, a.remarque, a.prixbh, a.send
+            FROM attache a
+            JOIN item i ON a.numero_item = i.bar
+            WHERE a.user_id = %s
+            ORDER BY a.numero_comande DESC
+        """, (user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        ventes = []
+        for row in rows:
+            ventes.append({
+                'numero_attache': row[0],
+                'numero_comande': row[1],
+                'designation': row[2],
+                'quantite': row[3],
+                'prixt': row[4],
+                'remarque': row[5],
+                'prixbh': row[6],
+                'send': row[7]
+            })
+
+        return jsonify(ventes)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
