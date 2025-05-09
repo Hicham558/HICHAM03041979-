@@ -281,84 +281,90 @@ def liste_ventes():
 
 @app.route('/ajouter_vente', methods=['POST'])
 def ajouter_vente():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    # Récupérer l'ID de l'utilisateur depuis l'en-tête
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
 
+    # Récupérer les données JSON de la requête
     data = request.get_json()
-    client_id = data.get('client_id')
-    produit_bar = data.get('produit_bar')
-    quantite = data.get('quantite')
-    prixt = data.get('prixt')
-    remarque = data.get('remarque')
-    prixbh = data.get('prixbh')
-    numero_util = data.get('numero_util')
-    etat_c = data.get('etat_c', 'en_cours')  # Valeur par défaut
-    nature = data.get('nature')
 
-    if not all([produit_bar, quantite is not None, prixt is not None, remarque is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (produit_bar, quantite, prixt, remarque)'}), 400
+    # Vérifier que tous les champs requis sont présents
+    required_fields = ['client_id', 'produit_bar', 'quantite', 'prixt', 'remarque', 'prixbh', 'numero_util', 'etat_c', 'nature']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'erreur': f'Champ {field} manquant'}), 400
 
+    conn = None
     try:
-        quantite = int(quantite)
-        prixt = float(prixt)
-        prixbh = float(prixbh) if prixbh is not None else 0.0
-        if quantite <= 0 or prixt < 0:
-            return jsonify({'erreur': 'La quantité doit être positive et le prix non négatif'}), 400
+        # Convertir les données en types appropriés
+        client_id = data['client_id']  # Peut être '0' pour vente comptoir
+        produit_bar = data['produit_bar']
+        quantite = int(data['quantite'])
+        prixt = float(data['prixt'])
+        remarque = float(data['remarque'])  # Prix unitaire
+        prixbh = float(data['prixbh'])      # Prix d'achat
+        numero_util = data['numero_util']
+        etat_c = data['etat_c']
+        nature = data['nature']
 
-        conn = get_conn()
-        cur = conn.cursor()
+        # Connexion à la base de données PostgreSQL
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
-        # Vérifier si le produit existe et si la quantité est suffisante
-        cur.execute("SELECT qte, prix FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
-        produit = cur.fetchone()
-        if not produit:
-            cur.close()
+        # Vérifier si le produit existe et récupérer le stock
+        cursor.execute("SELECT QTE FROM item WHERE BAR = %s", (produit_bar,))
+        product = cursor.fetchone()
+        if not product:
             conn.close()
-            return jsonify({'erreur': 'Produit introuvable'}), 404
-        if produit[0] < quantite:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Quantité insuffisante en stock'}), 400
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
 
-        # Vérifier si le client existe (si spécifié)
-        if client_id:
-            cur.execute("SELECT numero_clt FROM client WHERE numero_clt = %s AND user_id = %s", (client_id, user_id))
-            if not cur.fetchone():
-                cur.close()
+        stock = product[0]
+        if quantite > stock:
+            conn.close()
+            return jsonify({'erreur': 'Stock insuffisant'}), 400
+
+        # Insérer la vente dans la table comande
+        cursor.execute('''
+            INSERT INTO comande (numero_table, numero_item, quantite, prixt, remarque, prixbh, numero_util, etat_c, nature)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (client_id, produit_bar, quantite, prixt, remarque, prixbh, numero_util, etat_c, nature))
+
+        # Mettre à jour le stock dans la table item
+        new_stock = stock - quantite
+        cursor.execute('UPDATE item SET QTE = %s WHERE BAR = %s', (new_stock, produit_bar))
+
+        # Mettre à jour le solde du client uniquement s'il n'est pas '0' (vente comptoir)
+        if client_id != '0':
+            cursor.execute('UPDATE client SET solde = solde + %s WHERE numero_clt = %s', (prixt, client_id))
+            if cursor.rowcount == 0:
+                conn.rollback()
                 conn.close()
-                return jsonify({'erreur': 'Client introuvable'}), 404
+                return jsonify({'erreur': 'Client introuvable'}), 400
 
-        # Créer une nouvelle commande
-        cur.execute(
-            "INSERT INTO comande (numero_table, date_comande, etat_c, numero_util, nature, user_id) "
-            "VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s) RETURNING numero_comande",
-            (client_id, etat_c, numero_util, nature, user_id)
-        )
-        numero_comande = cur.fetchone()[0]
-
-        # Ajouter la ligne de vente (attache)
-        cur.execute(
-            "INSERT INTO attache (numero_item, quantite, prixt, remarque, send, numero_comande, prixbh, user_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING numero_attache",
-            (produit_bar, quantite, prixt, remarque, False, numero_comande, prixbh, user_id)
-        )
-
-        # Mettre à jour le stock
-        cur.execute("UPDATE item SET qte = qte - %s WHERE bar = %s AND user_id = %s", (quantite, produit_bar, user_id))
-
-        # Mettre à jour le solde du client (si spécifié)
-        if client_id:
-            cur.execute("UPDATE client SET solde = solde + %s WHERE numero_clt = %s AND user_id = %s", (prixt, client_id, user_id))
-
+        # Valider la transaction
         conn.commit()
-        cur.close()
         conn.close()
-        return jsonify({'statut': 'Vente enregistrée', 'numero_comande': numero_comande}), 201
-    except ValueError:
-        return jsonify({'erreur': 'Les champs quantité et prix doivent être des nombres valides'}), 400
+
+        return jsonify({'message': 'Vente ajoutée avec succès'}), 200
+
+    except psycopg2.Error as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': f'Valeur invalide: {str(e)}'}), 400
     except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+
+
 
 # Lancer l'application
 if __name__ == '__main__':
