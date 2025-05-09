@@ -309,7 +309,7 @@ def ajouter_vente():
         nature = data['nature']
 
         # Connexion à la base de données PostgreSQL
-        conn = get_db_connection()
+        conn = get_conn()
         cursor = conn.cursor()
 
         # Vérifier si le produit existe et récupérer le stock
