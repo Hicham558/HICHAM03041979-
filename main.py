@@ -242,182 +242,87 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 
-# Liste des ventes
-@app.route('/liste_ventes', methods=['GET'])
-def liste_ventes():
+@app.route('/valider_vente', methods=['POST'])
+def valider_vente():
+    # Vérifier l'authentification de l'utilisateur
     user_id = request.headers.get('X-User-ID')
     if not user_id:
-        return jsonify({'error': 'Utilisateur non authentifié'}), 401
+        print("Erreur: Utilisateur non authentifié")
+        return jsonify({"error": "Utilisateur non authentifié"}), 401
 
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
-
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT 
-                c.numero_comande,
-                i.DESIGNATION,
-                a.produit_bar,
-                a.quantite,
-                a.remarque,
-                a.prixt,
-                a.prixbh,
-                c.date_comande,
-                c.numero_table
-            FROM comande c
-            JOIN attache a ON c.numero_comande = a.numero_comande
-            JOIN item i ON a.produit_bar = i.BAR
-            WHERE c.user_id = %s AND c.nature = 'vente'
-            ORDER BY c.date_comande DESC
-        """, (user_id,))
-        ventes = [
-            {
-                'numero_comande': row[0],
-                'designation': row[1],
-                'produit_bar': row[2],
-                'quantite': row[3],
-                'remarque': row[4] or '',
-                'prixt': float(row[5]) if row[5] is not None else 0.0,
-                'prixbh': float(row[6]) if row[6] is not None else 0.0,
-                'date_comande': row[7].isoformat() if row[7] else '',
-                'numero_table': row[8]
-            } for row in cur.fetchall()
-        ]
-        cur.close()
-        db_pool.putconn(conn)
-        return jsonify(ventes)
-    except Exception as e:
-        logging.error(f"Erreur lors de la récupération des ventes : {e}")
-        db_pool.putconn(conn)
-        return jsonify({'error': str(e)}), 500
-
-# Créer une commande
-@app.route('/creer_comande', methods=['POST'])
-def creer_comande():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'error': 'Utilisateur non authentifié'}), 401
-
+    # Récupérer les données JSON
     data = request.get_json()
+    if not data or 'lignes' not in data or not data['lignes']:
+        print("Erreur: Données de vente invalides ou aucune ligne fournie")
+        return jsonify({"error": "Données de vente invalides ou aucune ligne fournie"}), 400
+
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    etat_c = data.get('etat_c', 'Asuivre')  # Par défaut 'Asuivre'
     nature = data.get('nature', 'vente')
+    lignes = data['lignes']
 
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
-
+    conn = None
     try:
-        cur = conn.cursor()
+        # Obtenir une connexion depuis le pool
+        conn = db_pool.getconn()
+        conn.autocommit = False  # Activer la gestion des transactions
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Insérer la commande dans comande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, user_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature)
+            VALUES (%s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, etat_c, nature, user_id))
-        numero_comande = cur.fetchone()[0]
-        conn.commit()
-        cur.close()
-        db_pool.putconn(conn)
-        return jsonify({'numero_comande': numero_comande})
-    except Exception as e:
-        conn.rollback()
-        logging.error(f"Erreur lors de la création de la commande : {e}")
-        db_pool.putconn(conn)
-        return jsonify({'error': str(e)}), 500
+        """, (numero_table, date_comande, 'cloture', nature))
+        numero_comande = cur.fetchone()['numero_comande']
+        print(f"Commande insérée: numero_comande={numero_comande}")
 
-# Ajouter plusieurs lignes à attache
-@app.route('/ajouter_attache', methods=['POST'])
-def ajouter_attache():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'error': 'Utilisateur non authentifié'}), 401
-
-    data = request.get_json()
-    if not isinstance(data, list):
-        return jsonify({'error': 'Les données doivent être un tableau de lignes'}), 400
-
-    if not data:
-        return jsonify({'error': 'Aucune ligne à ajouter'}), 400
-
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
-
-    try:
-        cur = conn.cursor()
-        inserted_rows = []
-        for ligne in data:
-            numero_comande = ligne.get('numero_comande')
+        # Vérifier le stock pour chaque ligne
+        for ligne in lignes:
             produit_bar = ligne.get('produit_bar')
             quantite = ligne.get('quantite')
-            prixt = ligne.get('prixt')
-            remarque = ligne.get('remarque')
-            prixbh = ligne.get('prixbh')
+            cur.execute("SELECT QTE FROM item WHERE BAR = %s", (produit_bar,))
+            stock = cur.fetchone()
+            if not stock or stock['qte'] < quantite:
+                conn.rollback()
+                print(f"Erreur: Stock insuffisant pour le produit {produit_bar}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
+                return jsonify({"error": f"Stock insuffisant pour le produit {produit_bar}"}), 400
 
-            if not all([numero_comande, produit_bar, quantite, prixt]):
-                continue  # Ignorer les lignes incomplètes
-
+        # Insérer les lignes dans attache et mettre à jour le stock
+        for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING numero_comande
-            """, (numero_comande, user_id, produit_bar, quantite, prixt, str(remarque), prixbh))
-            inserted_rows.append(cur.fetchone()[0])
+                INSERT INTO attache (numero_comande, produit_bar, quantite, prixt, remarque, prixbh)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                numero_comande,
+                ligne.get('produit_bar'),
+                ligne.get('quantite'),
+                ligne.get('prixt'),
+                ligne.get('remarque'),
+                ligne.get('prixbh')
+            ))
+            # Mettre à jour le stock
+            cur.execute("""
+                UPDATE item SET QTE = QTE - %s WHERE BAR = %s
+            """, (ligne.get('quantite'), ligne.get('produit_bar')))
 
+        # Valider la transaction
         conn.commit()
-        cur.close()
-        db_pool.putconn(conn)
-        return jsonify({'inserted_rows': inserted_rows})
+        print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes insérées")
+        return jsonify({"numero_comande": numero_comande}), 200
+
     except Exception as e:
-        conn.rollback()
-        logging.error(f"Erreur lors de l'ajout à attache : {e}")
-        db_pool.putconn(conn)
-        return jsonify({'error': str(e)}), 500
-
-# Clôturer une commande
-@app.route('/cloturer_comande', methods=['POST'])
-def cloturer_comande():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'error': 'Utilisateur non authentifié'}), 401
-
-    data = request.get_json()
-    numero_comande = data.get('numero_comande')
-
-    if not numero_comande:
-        return jsonify({'error': 'numero_comande manquant'}), 400
-
-    conn = get_db_connection()
-    if not conn:
-        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
-
-    try:
-        cur = conn.cursor()
-        cur.execute("""
-            UPDATE comande
-            SET etat_c = 'cloture'
-            WHERE numero_comande = %s AND user_id = %s
-            RETURNING numero_comande
-        """, (numero_comande, user_id))
-        result = cur.fetchone()
-        if not result:
+        # Annuler la transaction en cas d'erreur
+        if conn:
             conn.rollback()
+        print(f"Erreur lors de la validation de la vente: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        # Libérer la connexion
+        if conn:
             cur.close()
             db_pool.putconn(conn)
-            return jsonify({'error': 'Commande non trouvée ou non autorisée'}), 404
-
-        conn.commit()
-        cur.close()
-        db_pool.putconn(conn)
-        return jsonify({'numero_comande': result[0], 'etat_c': 'cloture'})
-    except Exception as e:
-        conn.rollback()
-        logging.error(f"Erreur lors de la clôture de la commande : {e}")
-        db_pool.putconn(conn)
-        return jsonify({'error': str(e)}), 500
 
 # Lancer l'application
 if __name__ == '__main__':
