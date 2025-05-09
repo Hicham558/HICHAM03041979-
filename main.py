@@ -242,102 +242,139 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 
-# Endpoint pour créer une commande et retourner numero_comande
+# --- Commandes ---
 @app.route('/creer_comande', methods=['POST'])
 def creer_comande():
     user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
     data = request.get_json()
     numero_table = data.get('numero_table')
-    numero_util = data.get('numero_util')
     date_comande = data.get('date_comande')
     etat_c = data.get('etat_c', 'en_cours')
     nature = data.get('nature', 'vente')
 
+    if not all([numero_table is not None, date_comande]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (numero_table, date_comande)'}), 400
+
     try:
         conn = get_conn()
         cursor = conn.cursor()
-        query = sql.SQL("INSERT INTO comande (numero_table, numero_util, date_comande, etat_c, nature) VALUES (%s, %s, %s, %s, %s) RETURNING id")
-        cursor.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
+        query = "INSERT INTO comande (numero_table, date_comande, etat_c, nature, user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id"
+        cursor.execute(query, (numero_table, date_comande, etat_c, nature, user_id))
         numero_comande = cursor.fetchone()[0]
         conn.commit()
+        cursor.close()
+        conn.close()
         return jsonify({'numero_comande': numero_comande}), 200
     except psycopg2.Error as e:
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
-# Endpoint pour ajouter une ligne dans attache
+# --- Lignes de vente ---
 @app.route('/ajouter_attache', methods=['POST'])
 def ajouter_attache():
     user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
     data = request.get_json()
     numero_comande = data.get('numero_comande')
-    user_id = data.get('user_id')
     produit_bar = data.get('produit_bar')
     quantite = data.get('quantite')
     prixt = data.get('prixt')
-    remarque = data.get('remarque')
+    remarque = data.get('remarque', '')
     prixbh = data.get('prixbh')
 
+    if not all([numero_comande, produit_bar, quantite is not None, prixt is not None]):
+        return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
+
     try:
+        quantite = int(quantite)
+        prixt = float(prixt)
+        prixbh = float(prixbh) if prixbh is not None else 0.0
+        if quantite <= 0 or prixt < 0:
+            return jsonify({'erreur': 'Quantité doit être positive et prix non négatif'}), 400
+
         conn = get_conn()
         cursor = conn.cursor()
-        query = sql.SQL("INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh) VALUES (%s, %s, %s, %s, %s, %s, %s)")
-        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
+
+        # Vérifier si le produit existe
+        cursor.execute("SELECT prixba FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
+        result = cursor.fetchone()
+        if not result:
+            cursor.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        prixba = result[0]
+        if prixbh is not None and str(prixbh) != prixba:
+            cursor.close()
+            conn.close()
+            return jsonify({'erreur': 'prixbh doit correspondre à prixba du produit'}), 400
+
+        # Insérer la ligne dans attache
+        query = """
+            INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixba))
         conn.commit()
+        cursor.close()
+        conn.close()
         return jsonify({'message': 'Ligne ajoutée avec succès'}), 200
+    except ValueError:
+        return jsonify({'erreur': 'Quantité et prix doivent être des nombres valides'}), 400
     except psycopg2.Error as e:
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
-    finally:
-        if 'conn' in locals():
-            conn.close()
 
-# Endpoint pour lister les ventes@app.route('/liste_ventes', methods=['GET'])
+# --- Liste des ventes ---
+@app.route('/liste_ventes', methods=['GET'])
 def liste_ventes():
     user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
         conn = get_conn()
         cursor = conn.cursor()
-        query = '''
-            SELECT numero_comande , designation, numero_item, quantite, 
-                   attache.remarque, attache.prixt, attache.prixbh,send
-from item,attache
-where
-item.numero_item=attache.numero_item 
-and
-comande.user_id = %s
-        '''
-        cursor.execute(query, (user_id))
+        query = """
+            SELECT c.id AS numero_comande, i.designation, i.bar AS produit_bar, a.quantite,
+                   a.remarque, a.prixt, a.prixbh, c.date_comande
+            FROM comande c
+            JOIN attache a ON c.id = a.numero_comande
+            JOIN item i ON a.produit_bar = i.bar
+            WHERE c.user_id = %s AND c.nature = 'vente'
+            ORDER BY c.date_comande DESC
+        """
+        cursor.execute(query, (user_id,))
         ventes = cursor.fetchall()
 
-        ventes_list = []
-        for vente in ventes:
-            ventes_list.append({
+        ventes_list = [
+            {
                 'numero_comande': vente[0],
                 'designation': vente[1],
-                'numero_item': vente[2],
+                'produit_bar': vente[2],
                 'quantite': vente[3],
-                'attache.remarque': float(vente[4]) if vente[4] is not None else 0.0,# prix unitaire
-                'attache.prixt': float(vente[5]) if vente[5] is not None else 0.0,
-                'attache.prixbh': float(vente[6]) if vente[6] is not None else 0.0,
-                'send': vente[7] if vente[7] is not None else False
-            })
+                'remarque': vente[4] or '',
+                'prixt': float(vente[5]) if vente[5] is not None else 0.0,
+                'prixbh': float(vente[6]) if vente[6] is not None else 0.0,
+                'date_comande': vente[7].isoformat() if vente[7] else ''
+            }
+            for vente in ventes
+        ]
 
+        cursor.close()
+        conn.close()
         return jsonify(ventes_list), 200
     except psycopg2.Error as e:
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
-    finally:
-        if 'conn' in locals():
-            conn.close()
-
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
