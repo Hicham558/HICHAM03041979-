@@ -303,7 +303,7 @@ def creer_comande():
     data = request.get_json()
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    etat_c = data.get('etat_c', 'en_cours')
+    etat_c = data.get('etat_c', 'Asuivre')  # Par défaut 'Asuivre'
     nature = data.get('nature', 'vente')
 
     conn = get_db_connection()
@@ -328,7 +328,7 @@ def creer_comande():
         db_pool.putconn(conn)
         return jsonify({'error': str(e)}), 500
 
-# Ajouter une ligne à attache
+# Ajouter plusieurs lignes à attache
 @app.route('/ajouter_attache', methods=['POST'])
 def ajouter_attache():
     user_id = request.headers.get('X-User-ID')
@@ -336,15 +336,59 @@ def ajouter_attache():
         return jsonify({'error': 'Utilisateur non authentifié'}), 401
 
     data = request.get_json()
-    numero_comande = data.get('numero_comande')
-    produit_bar = data.get('produit_bar')
-    quantite = data.get('quantite')
-    prixt = data.get('prixt')
-    remarque = data.get('remarque')
-    prixbh = data.get('prixbh')
+    if not isinstance(data, list):
+        return jsonify({'error': 'Les données doivent être un tableau de lignes'}), 400
 
-    if not all([numero_comande, produit_bar, quantite, prixt]):
-        return jsonify({'error': 'Données manquantes'}), 400
+    if not data:
+        return jsonify({'error': 'Aucune ligne à ajouter'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
+
+    try:
+        cur = conn.cursor()
+        inserted_rows = []
+        for ligne in data:
+            numero_comande = ligne.get('numero_comande')
+            produit_bar = ligne.get('produit_bar')
+            quantite = ligne.get('quantite')
+            prixt = ligne.get('prixt')
+            remarque = ligne.get('remarque')
+            prixbh = ligne.get('prixbh')
+
+            if not all([numero_comande, produit_bar, quantite, prixt]):
+                continue  # Ignorer les lignes incomplètes
+
+            cur.execute("""
+                INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING numero_comande
+            """, (numero_comande, user_id, produit_bar, quantite, prixt, str(remarque), prixbh))
+            inserted_rows.append(cur.fetchone()[0])
+
+        conn.commit()
+        cur.close()
+        db_pool.putconn(conn)
+        return jsonify({'inserted_rows': inserted_rows})
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Erreur lors de l'ajout à attache : {e}")
+        db_pool.putconn(conn)
+        return jsonify({'error': str(e)}), 500
+
+# Clôturer une commande
+@app.route('/cloturer_comande', methods=['POST'])
+def cloturer_comande():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'error': 'Utilisateur non authentifié'}), 401
+
+    data = request.get_json()
+    numero_comande = data.get('numero_comande')
+
+    if not numero_comande:
+        return jsonify({'error': 'numero_comande manquant'}), 400
 
     conn = get_db_connection()
     if not conn:
@@ -353,18 +397,25 @@ def ajouter_attache():
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            UPDATE comande
+            SET etat_c = 'cloture'
+            WHERE numero_comande = %s AND user_id = %s
             RETURNING numero_comande
-        """, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
-        result = cur.fetchone()[0]
+        """, (numero_comande, user_id))
+        result = cur.fetchone()
+        if not result:
+            conn.rollback()
+            cur.close()
+            db_pool.putconn(conn)
+            return jsonify({'error': 'Commande non trouvée ou non autorisée'}), 404
+
         conn.commit()
         cur.close()
         db_pool.putconn(conn)
-        return jsonify({'numero_comande': result})
+        return jsonify({'numero_comande': result[0], 'etat_c': 'cloture'})
     except Exception as e:
         conn.rollback()
-        logging.error(f"Erreur lors de l'ajout à attache : {e}")
+        logging.error(f"Erreur lors de la clôture de la commande : {e}")
         db_pool.putconn(conn)
         return jsonify({'error': str(e)}), 500
 
