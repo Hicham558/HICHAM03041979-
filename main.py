@@ -1,26 +1,20 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
-from psycopg2 import Error as PsycopgError
 import os
 
 app = Flask(__name__)
-CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton domaine GitHub Pages
+CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis GitHub Pages
 
-# Fonction pour établir une connexion à la base de données
+# Connexion à la base de données
 def get_conn():
-    try:
-        conn = psycopg2.connect(
-            dbname=os.getenv('PG_DBNAME', 'your_db_name'),
-            user=os.getenv('PG_USER', 'your_db_user'),
-            password=os.getenv('PG_PASSWORD', 'your_db_password'),
-            host=os.getenv('PG_HOST', 'your_db_host'),
-            port=os.getenv('PG_PORT', '5432')
-        )
-        return conn
-    except PsycopgError as e:
-        print(f"Erreur de connexion à la base de données: {e}")
-        raise
+    return psycopg2.connect(
+        dbname=os.getenv('PG_DBNAME', 'your_db_name'),
+        user=os.getenv('PG_USER', 'your_db_user'),
+        password=os.getenv('PG_PASSWORD', 'your_db_password'),
+        host=os.getenv('PG_HOST', 'your_db_host'),
+        port=os.getenv('PG_PORT', '5432')
+    )
 
 # Route de test
 @app.route('/', methods=['GET'])
@@ -34,19 +28,15 @@ def liste_clients():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute("""
             SELECT numero_clt, nom, solde, reference, contact, adresse
             FROM client
             WHERE user_id = %s
             ORDER BY nom
         """, (user_id,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
         clients = [
             {
                 'numero_clt': row[0],
@@ -58,10 +48,11 @@ def liste_clients():
             } for row in rows
         ]
         return jsonify(clients)
-    except PsycopgError as e:
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
@@ -76,9 +67,9 @@ def ajouter_client():
     if not all([nom, solde, reference, user_id]):
         return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO client (nom, solde, reference, contact, adresse, user_id)
@@ -89,20 +80,13 @@ def ajouter_client():
         )
         numero_clt = cur.fetchone()[0]
         conn.commit()
-        cur.close()
-        conn.close()
         return jsonify({'statut': 'Client ajouté', 'numero_clt': numero_clt})
-    except PsycopgError as e:
-        conn.rollback()
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         conn.rollback()
         return jsonify({'erreur': str(e)}), 500
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        cur.close()
+        conn.close()
 
 # --- Gestion des fournisseurs ---
 @app.route('/liste_fournisseurs', methods=['GET'])
@@ -111,11 +95,9 @@ def liste_fournisseurs():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
-    tryiativa: none
-
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute("""
             SELECT numero_fou, nom, solde, reference, contact, adresse
             FROM fournisseur
@@ -123,9 +105,6 @@ def liste_fournisseurs():
             ORDER BY nom
         """, (user_id,))
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
         fournisseurs = [
             {
                 'numero_fou': row[0],
@@ -137,10 +116,11 @@ def liste_fournisseurs():
             } for row in rows
         ]
         return jsonify(fournisseurs)
-    except PsycopgError as e:
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route('/ajouter_fournisseur', methods=['POST'])
 def ajouter_fournisseur():
@@ -155,9 +135,9 @@ def ajouter_fournisseur():
     if not all([nom, solde, reference, user_id]):
         return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO fournisseur (nom, solde, reference, contact, adresse, user_id)
@@ -168,20 +148,13 @@ def ajouter_fournisseur():
         )
         numero_fou = cur.fetchone()[0]
         conn.commit()
-        cur.close()
-        conn.close()
         return jsonify({'statut': 'Fournisseur ajouté', 'numero_fou': numero_fou})
-    except PsycopgError as e:
-        conn.rollback()
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         conn.rollback()
         return jsonify({'erreur': str(e)}), 500
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        cur.close()
+        conn.close()
 
 # --- Gestion des produits ---
 @app.route('/liste_produits', methods=['GET'])
@@ -190,9 +163,9 @@ def liste_produits():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute("""
             SELECT bar, designation, prix, qte, prixba
             FROM item
@@ -200,9 +173,6 @@ def liste_produits():
             ORDER BY designation
         """, (user_id,))
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
         produits = [
             {
                 'BAR': row[0],
@@ -213,10 +183,11 @@ def liste_produits():
             } for row in rows
         ]
         return jsonify(produits)
-    except PsycopgError as e:
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
@@ -231,10 +202,9 @@ def ajouter_item():
     if not all([designation, bar, prix, qte, user_id]):
         return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        # Vérifier si le code-barres existe déjà
         cur.execute("SELECT bar FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
         if cur.fetchone():
             return jsonify({'erreur': 'Ce code-barres existe déjà'}), 400
@@ -247,20 +217,13 @@ def ajouter_item():
             (bar, designation, float(prix), int(qte), prixba or '0.00', user_id)
         )
         conn.commit()
-        cur.close()
-        conn.close()
         return jsonify({'statut': 'Produit ajouté'})
-    except PsycopgError as e:
-        conn.rollback()
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         conn.rollback()
         return jsonify({'erreur': str(e)}), 500
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        cur.close()
+        conn.close()
 
 # --- Gestion des ventes ---
 @app.route('/liste_ventes', methods=['GET'])
@@ -269,9 +232,9 @@ def liste_ventes():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
         cur.execute("""
             SELECT a.numero_attache, a.numero_comande, i.designation, a.numero_item, 
                    a.quantite, a.prixt, a.remarque, a.prixbh, a.send
@@ -281,9 +244,6 @@ def liste_ventes():
             ORDER BY a.numero_comande DESC
         """, (user_id, user_id))
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
         ventes = [
             {
                 'numero_attache': row[0],
@@ -298,10 +258,11 @@ def liste_ventes():
             } for row in rows
         ]
         return jsonify(ventes)
-    except PsycopgError as e:
-        return jsonify({'erreur': f"Erreur PostgreSQL: {e.pgerror}"}), 500
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 @app.route('/ajouter_vente', methods=['POST'])
 def ajouter_vente():
@@ -319,12 +280,9 @@ def ajouter_vente():
     if not all([produit_bar, quantite, prixt, remarque, user_id]):
         return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
 
-    conn = None
-    cur = None
+    conn = get_conn()
+    cur = conn.cursor()
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-
         # Vérifier si le produit existe et récupérer prixba
         cur.execute("SELECT qte, prix, prixba FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
         produit = cur.fetchone()
@@ -344,10 +302,10 @@ def ajouter_vente():
         cur.execute(
             """
             INSERT INTO comande (numero_table, date_comande, etat_c, numero_util, nature, user_id, compteur)
-            VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s)
+            VALUES (%s, CURRENT_TIMESTAMP, %s, %s, %s, %s, 0)
             RETURNING numero_comande
             """,
-            (client_id, etat_c, numero_util, nature, user_id, 0)  # Compteur initialisé à 0
+            (client_id or None, etat_c, numero_util, nature, user_id)
         )
         numero_comande = cur.fetchone()[0]
 
@@ -373,22 +331,12 @@ def ajouter_vente():
 
         conn.commit()
         return jsonify({'statut': 'Vente enregistrée', 'numero_comande': numero_comande, 'numero_attache': numero_attache})
-    except PsycopgError as e:
-        if conn:
-            conn.rollback()
-        error_message = f"Erreur PostgreSQL: {e.pgerror}\nCode: {e.pgcode}"
-        print(error_message)  # Pour le débogage
-        return jsonify({'erreur': error_message}), 500
     except Exception as e:
-        if conn:
-            conn.rollback()
-        print(f"Erreur générale: {str(e)}")  # Pour le débogage
+        conn.rollback()
         return jsonify({'erreur': str(e)}), 500
     finally:
-        if cur:
-            cur.close()
-        if conn:
-            conn.close()
+        cur.close()
+        conn.close()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
