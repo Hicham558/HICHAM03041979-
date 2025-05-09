@@ -259,10 +259,10 @@ def creer_comande():
     conn = None
     try:
         conn = get_conn()
-        cursor = conn.cursor()
+        cur = conn.cursor()
         query = sql.SQL("INSERT INTO comande (numero_table, numero_util, date_comande, etat_c, nature) VALUES (%s, %s, %s, %s, %s) RETURNING id")
-        cursor.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
-        numero_comande = cursor.fetchone()[0]
+        cur.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
+        numero_comande = cur.fetchone()[0]
         conn.commit()
         conn.close()
         return jsonify({'numero_comande': numero_comande}), 200
@@ -293,9 +293,9 @@ def ajouter_attache():
     conn = None
     try:
          conn = get_conn()
-        cursor = conn.cursor()
+        cur = conn.cursor()
         query = sql.SQL("INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh) VALUES (%s, %s, %s, %s, %s, %s, %s)")
-        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
+        cur.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
         conn.commit()
         conn.close()
         return jsonify({'message': 'Ligne ajoutée avec succès'}), 200
@@ -317,7 +317,7 @@ def liste_ventes():
     conn = None
     try:
          conn = get_conn()
-        cursor = conn.cursor()
+        cur = conn.cursor()
         query = '''
             SELECT c.id AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
                    a.remarque, a.prixt, a.prixbh, c.send
@@ -325,8 +325,8 @@ def liste_ventes():
             LEFT JOIN attache a ON c.id = a.numero_comande
             WHERE c.nature = %s AND c.numero_util = %s
         '''
-        cursor.execute(query, ('vente', user_id))
-        ventes = cursor.fetchall()
+        cur.execute(query, ('vente', user_id))
+        ventes = cur.fetchall()
 
         ventes_list = []
         for vente in ventes:
