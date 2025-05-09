@@ -242,13 +242,10 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 
-
+# Endpoint pour créer une commande et retourner numero_comande
 @app.route('/creer_comande', methods=['POST'])
 def creer_comande():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
+    user_id = validate_user_id()
     data = request.get_json()
     numero_table = data.get('numero_table')
     numero_util = data.get('numero_util')
@@ -256,31 +253,26 @@ def creer_comande():
     etat_c = data.get('etat_c', 'en_cours')
     nature = data.get('nature', 'vente')
 
-    conn = None
     try:
         conn = get_conn()
-        cur = conn.cursor()
+        cursor = conn.cursor()
         query = sql.SQL("INSERT INTO comande (numero_table, numero_util, date_comande, etat_c, nature) VALUES (%s, %s, %s, %s, %s) RETURNING id")
-        cur.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
-        numero_comande = cur.fetchone()[0]
+        cursor.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
+        numero_comande = cursor.fetchone()[0]
         conn.commit()
-        conn.close()
         return jsonify({'numero_comande': numero_comande}), 200
     except psycopg2.Error as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
+# Endpoint pour ajouter une ligne dans attache
 @app.route('/ajouter_attache', methods=['POST'])
 def ajouter_attache():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
+    user_id = validate_user_id()
     data = request.get_json()
     numero_comande = data.get('numero_comande')
     user_id = data.get('user_id')
@@ -290,34 +282,29 @@ def ajouter_attache():
     remarque = data.get('remarque')
     prixbh = data.get('prixbh')
 
-    conn = None
     try:
-         conn = get_conn()
-        cur = conn.cursor()
+        conn = get_conn()
+        cursor = conn.cursor()
         query = sql.SQL("INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh) VALUES (%s, %s, %s, %s, %s, %s, %s)")
-        cur.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
+        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
         conn.commit()
-        conn.close()
         return jsonify({'message': 'Ligne ajoutée avec succès'}), 200
     except psycopg2.Error as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
+# Endpoint pour lister les ventes
 @app.route('/liste_ventes', methods=['GET'])
 def liste_ventes():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+    user_id = validate_user_id()
 
-    conn = None
     try:
-         conn = get_conn()
-        cur = conn.cursor()
+        conn = get_conn()
+        cursor = conn.cursor()
         query = '''
             SELECT c.id AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
                    a.remarque, a.prixt, a.prixbh, c.send
@@ -325,8 +312,8 @@ def liste_ventes():
             LEFT JOIN attache a ON c.id = a.numero_comande
             WHERE c.nature = %s AND c.numero_util = %s
         '''
-        cur.execute(query, ('vente', user_id))
-        ventes = cur.fetchall()
+        cursor.execute(query, ('vente', user_id))
+        ventes = cursor.fetchall()
 
         ventes_list = []
         for vente in ventes:
@@ -341,17 +328,14 @@ def liste_ventes():
                 'send': vente[7] if vente[7] is not None else False
             })
 
-        conn.close()
         return jsonify(ventes_list), 200
     except psycopg2.Error as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
     except Exception as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
-
+    finally:
+        if 'conn' in locals():
+            conn.close()
 
 
 # Lancer l'application
