@@ -181,7 +181,6 @@ def ajouter_vente():
     quantite = data.get('quantite')
     prixt = data.get('prixt')
     remarque = data.get('remarque')
-    prixbh = data.get('prixbh')
     numero_util = data.get('numero_util')
     etat_c = data.get('etat_c')
     nature = data.get('nature')
@@ -194,13 +193,14 @@ def ajouter_vente():
         conn = get_conn()
         cur = conn.cursor()
 
-        # Vérifier si le produit existe et si la quantité est suffisante
-        cur.execute("SELECT qte, prix FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
+        # Vérifier si le produit existe et récupérer prixba
+        cur.execute("SELECT qte, prix, prixba FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
         produit = cur.fetchone()
         if not produit:
             return jsonify({'erreur': 'Produit introuvable'}), 404
         if produit[0] < quantite:
             return jsonify({'erreur': 'Quantité insuffisante en stock'}), 400
+        prixbh = produit[2] or '0.00'  # Utiliser prixba comme prixbh, défaut à '0.00' si NULL
 
         # Vérifier si le client existe (si spécifié)
         if client_id:
