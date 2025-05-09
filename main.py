@@ -311,7 +311,7 @@ from item,attache
 where
 item.numero_item=attache.numero_item 
 and
-attache.numero_comande=:%s comande.user_id = %s
+comande.user_id = %s
         
         '''
         cursor.execute(query, ('vente', user_id))
