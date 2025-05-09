@@ -242,139 +242,132 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 
-# --- Commandes ---
+# Liste des ventes
+@app.route('/liste_ventes', methods=['GET'])
+def liste_ventes():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'error': 'Utilisateur non authentifié'}), 401
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
+
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 
+                c.numero_comande,
+                i.DESIGNATION,
+                a.produit_bar,
+                a.quantite,
+                a.remarque,
+                a.prixt,
+                a.prixbh,
+                c.date_comande,
+                c.numero_table
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
+            JOIN item i ON a.produit_bar = i.BAR
+            WHERE c.user_id = %s AND c.nature = 'vente'
+            ORDER BY c.date_comande DESC
+        """, (user_id,))
+        ventes = [
+            {
+                'numero_comande': row[0],
+                'designation': row[1],
+                'produit_bar': row[2],
+                'quantite': row[3],
+                'remarque': row[4] or '',
+                'prixt': float(row[5]) if row[5] is not None else 0.0,
+                'prixbh': float(row[6]) if row[6] is not None else 0.0,
+                'date_comande': row[7].isoformat() if row[7] else '',
+                'numero_table': row[8]
+            } for row in cur.fetchall()
+        ]
+        cur.close()
+        db_pool.putconn(conn)
+        return jsonify(ventes)
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération des ventes : {e}")
+        db_pool.putconn(conn)
+        return jsonify({'error': str(e)}), 500
+
+# Créer une commande
 @app.route('/creer_comande', methods=['POST'])
 def creer_comande():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'error': 'Utilisateur non authentifié'}), 401
 
     data = request.get_json()
-    numero_table = data.get('numero_table')
-    date_comande = data.get('date_comande')
+    numero_table = data.get('numero_table', 0)
+    date_comande = data.get('date_comande', datetime.utcnow().isoformat())
     etat_c = data.get('etat_c', 'en_cours')
     nature = data.get('nature', 'vente')
 
-    if not all([numero_table is not None, date_comande]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (numero_table, date_comande)'}), 400
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
 
     try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        query = "INSERT INTO comande (numero_table, date_comande, etat_c, nature, user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id"
-        cursor.execute(query, (numero_table, date_comande, etat_c, nature, user_id))
-        numero_comande = cursor.fetchone()[0]
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, user_id)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING numero_comande
+        """, (numero_table, date_comande, etat_c, nature, user_id))
+        numero_comande = cur.fetchone()[0]
         conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({'numero_comande': numero_comande}), 200
-    except psycopg2.Error as e:
-        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
+        cur.close()
+        db_pool.putconn(conn)
+        return jsonify({'numero_comande': numero_comande})
     except Exception as e:
-        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+        conn.rollback()
+        logging.error(f"Erreur lors de la création de la commande : {e}")
+        db_pool.putconn(conn)
+        return jsonify({'error': str(e)}), 500
 
-# --- Lignes de vente ---
+# Ajouter une ligne à attache
 @app.route('/ajouter_attache', methods=['POST'])
 def ajouter_attache():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'error': 'Utilisateur non authentifié'}), 401
 
     data = request.get_json()
     numero_comande = data.get('numero_comande')
     produit_bar = data.get('produit_bar')
     quantite = data.get('quantite')
     prixt = data.get('prixt')
-    remarque = data.get('remarque', '')
+    remarque = data.get('remarque')
     prixbh = data.get('prixbh')
 
-    if not all([numero_comande, produit_bar, quantite is not None, prixt is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
+    if not all([numero_comande, produit_bar, quantite, prixt]):
+        return jsonify({'error': 'Données manquantes'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
 
     try:
-        quantite = int(quantite)
-        prixt = float(prixt)
-        prixbh = float(prixbh) if prixbh is not None else 0.0
-        if quantite <= 0 or prixt < 0:
-            return jsonify({'erreur': 'Quantité doit être positive et prix non négatif'}), 400
-
-        conn = get_conn()
-        cursor = conn.cursor()
-
-        # Vérifier si le produit existe
-        cursor.execute("SELECT prixba FROM item WHERE bar = %s AND user_id = %s", (produit_bar, user_id))
-        result = cursor.fetchone()
-        if not result:
-            cursor.close()
-            conn.close()
-            return jsonify({'erreur': 'Produit non trouvé'}), 404
-
-        prixba = result[0]
-        if prixbh is not None and str(prixbh) != prixba:
-            cursor.close()
-            conn.close()
-            return jsonify({'erreur': 'prixbh doit correspondre à prixba du produit'}), 400
-
-        # Insérer la ligne dans attache
-        query = """
+        cur = conn.cursor()
+        cur.execute("""
             INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """
-        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixba))
+            RETURNING numero_comande
+        """, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
+        result = cur.fetchone()[0]
         conn.commit()
-        cursor.close()
-        conn.close()
-        return jsonify({'message': 'Ligne ajoutée avec succès'}), 200
-    except ValueError:
-        return jsonify({'erreur': 'Quantité et prix doivent être des nombres valides'}), 400
-    except psycopg2.Error as e:
-        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
+        cur.close()
+        db_pool.putconn(conn)
+        return jsonify({'numero_comande': result})
     except Exception as e:
-        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+        conn.rollback()
+        logging.error(f"Erreur lors de l'ajout à attache : {e}")
+        db_pool.putconn(conn)
+        return jsonify({'error': str(e)}), 500
 
-# --- Liste des ventes ---
-@app.route('/liste_ventes', methods=['GET'])
-def liste_ventes():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
-
-    try:
-        conn = get_conn()
-        cursor = conn.cursor()
-        query = """
-            SELECT c.id AS numero_comande, i.designation, i.bar AS produit_bar, a.quantite,
-                   a.remarque, a.prixt, a.prixbh, c.date_comande
-            FROM comande c
-            JOIN attache a ON c.id = a.numero_comande
-            JOIN item i ON a.produit_bar = i.bar
-            WHERE c.user_id = %s AND c.nature = 'vente'
-            ORDER BY c.date_comande DESC
-        """
-        cursor.execute(query, (user_id,))
-        ventes = cursor.fetchall()
-
-        ventes_list = [
-            {
-                'numero_comande': vente[0],
-                'designation': vente[1],
-                'produit_bar': vente[2],
-                'quantite': vente[3],
-                'remarque': vente[4] or '',
-                'prixt': float(vente[5]) if vente[5] is not None else 0.0,
-                'prixbh': float(vente[6]) if vente[6] is not None else 0.0,
-                'date_comande': vente[7].isoformat() if vente[7] else ''
-            }
-            for vente in ventes
-        ]
-
-        cursor.close()
-        conn.close()
-        return jsonify(ventes_list), 200
-    except psycopg2.Error as e:
-        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
-    except Exception as e:
-        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
