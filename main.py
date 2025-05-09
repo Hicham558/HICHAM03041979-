@@ -241,126 +241,114 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# --- Ventes ---
-@app.route('/liste_ventes', methods=['GET'])
-def liste_ventes():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
 
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT a.numero_attache, a.numero_comande, i.designation, a.quantite, a.prixt, a.remarque, a.prixbh, a.send
-            FROM attache a
-            JOIN item i ON a.numero_item = i.bar
-            WHERE a.user_id = %s
-            ORDER BY a.numero_comande DESC
-        """, (user_id,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
 
-        ventes = [
-            {
-                'numero_attache': row[0],
-                'numero_comande': row[1],
-                'designation': row[2],
-                'quantite': row[3],
-                'prixt': float(row[4]) if row[4] is not None else 0.0,
-                'remarque': row[5] or '',
-                'prixbh': float(row[6]) if row[6] is not None else 0.0,
-                'send': row[7]
-            }
-            for row in rows
-        ]
-        return jsonify(ventes)
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/ajouter_vente', methods=['POST'])
-def ajouter_vente():
-    # Récupérer l'ID de l'utilisateur depuis l'en-tête
+@app.route('/creer_comande', methods=['POST'])
+def creer_comande():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
 
-    # Récupérer les données JSON de la requête
     data = request.get_json()
-
-    # Vérifier que tous les champs requis sont présents
-    required_fields = ['client_id', 'produit_bar', 'quantite', 'prixt', 'remarque', 'prixbh', 'numero_util', 'etat_c', 'nature']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'erreur': f'Champ {field} manquant'}), 400
+    numero_table = data.get('numero_table')
+    numero_util = data.get('numero_util')
+    date_comande = data.get('date_comande')
+    etat_c = data.get('etat_c', 'en_cours')
+    nature = data.get('nature', 'vente')
 
     conn = None
     try:
-        # Convertir les données en types appropriés
-        client_id = data['client_id']  # Peut être '0' pour vente comptoir
-        produit_bar = data['produit_bar']
-        quantite = int(data['quantite'])
-        prixt = float(data['prixt'])
-        remarque = float(data['remarque'])  # Prix unitaire
-        prixbh = float(data['prixbh'])      # Prix d'achat
-        numero_util = data['numero_util']
-        etat_c = data['etat_c']
-        nature = data['nature']
-
-        # Connexion à la base de données PostgreSQL
         conn = get_conn()
         cursor = conn.cursor()
-
-        # Vérifier si le produit existe et récupérer le stock
-        cursor.execute("SELECT QTE FROM item WHERE BAR = %s", (produit_bar,))
-        product = cursor.fetchone()
-        if not product:
-            conn.close()
-            return jsonify({'erreur': 'Produit non trouvé'}), 404
-
-        stock = product[0]
-        if quantite > stock:
-            conn.close()
-            return jsonify({'erreur': 'Stock insuffisant'}), 400
-
-        # Insérer la vente dans la table comande
-        cursor.execute('''
-            INSERT INTO comande (numero_table, numero_item, quantite, prixt, remarque, prixbh, numero_util, etat_c, nature)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ''', (client_id, produit_bar, quantite, prixt, remarque, prixbh, numero_util, etat_c, nature))
-
-        # Mettre à jour le stock dans la table item
-        new_stock = stock - quantite
-        cursor.execute('UPDATE item SET QTE = %s WHERE BAR = %s', (new_stock, produit_bar))
-
-        # Mettre à jour le solde du client uniquement s'il n'est pas '0' (vente comptoir)
-        if client_id != '0':
-            cursor.execute('UPDATE client SET solde = solde + %s WHERE numero_clt = %s', (prixt, client_id))
-            if cursor.rowcount == 0:
-                conn.rollback()
-                conn.close()
-                return jsonify({'erreur': 'Client introuvable'}), 400
-
-        # Valider la transaction
+        query = sql.SQL("INSERT INTO comande (numero_table, numero_util, date_comande, etat_c, nature) VALUES (%s, %s, %s, %s, %s) RETURNING id")
+        cursor.execute(query, (numero_table, numero_util, date_comande, etat_c, nature))
+        numero_comande = cursor.fetchone()[0]
         conn.commit()
         conn.close()
-
-        return jsonify({'message': 'Vente ajoutée avec succès'}), 200
-
+        return jsonify({'numero_comande': numero_comande}), 200
     except psycopg2.Error as e:
         if conn:
-            conn.rollback()
             conn.close()
         return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
-    except ValueError as e:
-        if conn:
-            conn.rollback()
-            conn.close()
-        return jsonify({'erreur': f'Valeur invalide: {str(e)}'}), 400
     except Exception as e:
         if conn:
-            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+
+@app.route('/ajouter_attache', methods=['POST'])
+def ajouter_attache():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+
+    data = request.get_json()
+    numero_comande = data.get('numero_comande')
+    user_id = data.get('user_id')
+    produit_bar = data.get('produit_bar')
+    quantite = data.get('quantite')
+    prixt = data.get('prixt')
+    remarque = data.get('remarque')
+    prixbh = data.get('prixbh')
+
+    conn = None
+    try:
+         conn = get_conn()
+        cursor = conn.cursor()
+        query = sql.SQL("INSERT INTO attache (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh) VALUES (%s, %s, %s, %s, %s, %s, %s)")
+        cursor.execute(query, (numero_comande, user_id, produit_bar, quantite, prixt, remarque, prixbh))
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Ligne ajoutée avec succès'}), 200
+    except psycopg2.Error as e:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
+    except Exception as e:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
+
+@app.route('/liste_ventes', methods=['GET'])
+def liste_ventes():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+
+    conn = None
+    try:
+         conn = get_conn()
+        cursor = conn.cursor()
+        query = '''
+            SELECT c.id AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
+                   a.remarque, a.prixt, a.prixbh, c.send
+            FROM comande c
+            LEFT JOIN attache a ON c.id = a.numero_comande
+            WHERE c.nature = %s AND c.numero_util = %s
+        '''
+        cursor.execute(query, ('vente', user_id))
+        ventes = cursor.fetchall()
+
+        ventes_list = []
+        for vente in ventes:
+            ventes_list.append({
+                'numero_comande': vente[0],
+                'numero_table': vente[1],
+                'produit_bar': vente[2],
+                'quantite': vente[3],
+                'remarque': float(vente[4]) if vente[4] is not None else 0.0,
+                'prixt': float(vente[5]) if vente[5] is not None else 0.0,
+                'prixbh': float(vente[6]) if vente[6] is not None else 0.0,
+                'send': vente[7] if vente[7] is not None else False
+            })
+
+        conn.close()
+        return jsonify(ventes_list), 200
+    except psycopg2.Error as e:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': f'Erreur PostgreSQL: {str(e)}'}), 500
+    except Exception as e:
+        if conn:
             conn.close()
         return jsonify({'erreur': f'Erreur inattendue: {str(e)}'}), 500
 
