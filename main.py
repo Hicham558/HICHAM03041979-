@@ -305,11 +305,14 @@ def liste_ventes():
         conn = get_conn()
         cursor = conn.cursor()
         query = '''
-            SELECT c.numero_comande AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
-                   a.remarque, a.prixt, a.prixbh, c.send
-            FROM comande c
-            LEFT JOIN attache a ON c.numero_comande = a.numero_comande
-            WHERE c.nature = %s AND c.numero_util = %s
+            SELECT numero_comande , designation, numero_item, quantite, 
+                   attache.remarque, attache.prixt, attache.prixbh,send
+from item,attache
+where
+item.numero_item=attache.numero_item 
+and
+attache.numero_comande=:%s comande.user_id = %s
+        
         '''
         cursor.execute(query, ('vente', user_id))
         ventes = cursor.fetchall()
@@ -318,12 +321,12 @@ def liste_ventes():
         for vente in ventes:
             ventes_list.append({
                 'numero_comande': vente[0],
-                'numero_table': vente[1],
-                'produit_bar': vente[2],
+                'designation': vente[1],
+                'numero_item': vente[2],
                 'quantite': vente[3],
-                'remarque': float(vente[4]) if vente[4] is not None else 0.0,
-                'prixt': float(vente[5]) if vente[5] is not None else 0.0,
-                'prixbh': float(vente[6]) if vente[6] is not None else 0.0,
+                'attache.remarque': float(vente[4]) if vente[4] is not None else 0.0,# prix unitaire
+                'attache.prixt': float(vente[5]) if vente[5] is not None else 0.0,
+                'attache.prixbh': float(vente[6]) if vente[6] is not None else 0.0,
                 'send': vente[7] if vente[7] is not None else False
             })
 
