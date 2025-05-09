@@ -83,33 +83,36 @@ def ajouter_item():
     bar = data.get('bar')
     prix = data.get('prix')
     qte = data.get('qte')
-    user_id = request.headers.get('X-User-ID')  # Récupérer l'identifiant utilisateur depuis l'en-tête
+    prixba = data.get('prixba')
+    user_id = request.headers.get('X-User-ID')
 
-    if not all([designation, bar, prix, qte, user_id]):  # Vérifier que user_id est requis
-        return jsonify({'erreur': 'Champs manquants'}), 400
+    if not all([designation, bar, prix, qte, user_id]):
+        return jsonify({'erreur': 'Champs obligatoires manquants'}), 400
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("INSERT INTO item (designation, bar, prix, qte, user_id) VALUES (%s, %s, %s, %s, %s)",
-                    (designation, bar, prix, qte, user_id))
+        cur.execute(
+            "INSERT INTO item (bar, designation, prix, qte, prixba, user_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (bar, designation, prix, qte, prixba or '0.00', user_id)
+        )
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Item ajouté'})
+        return jsonify({'statut': 'Produit ajouté'})
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    user_id = request.headers.get('X-User-ID')  # Récupérer l'identifiant utilisateur depuis l'en-tête
+    user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix FROM item WHERE user_id = %s", (user_id,))
+        cur.execute("SELECT bar, designation, prix, qte, prixba FROM item WHERE user_id = %s", (user_id,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -117,11 +120,11 @@ def liste_produits():
         produits = []
         for row in rows:
             produits.append({
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
+                'BAR': row[0],
+                'DESIGNATION': row[1],
+                'PRIX': str(row[2]),
                 'QTE': row[3],
-                'PRIX': row[4]
+                'PRIXBA': str(row[4]) if row[4] is not None else '0.00'
             })
 
         return jsonify(produits)
