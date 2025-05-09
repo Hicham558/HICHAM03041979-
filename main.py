@@ -5,7 +5,7 @@ import os
 import logging
 
 app = Flask(__name__)
-CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis GitHub Pages
+CORS(app, origins=["https://hicham558.github.io"])  # Autoriser GitHub Pages
 
 # Configurer les logs
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -335,7 +335,7 @@ def ajouter_vente():
         if produit[0] < quantite:
             logging.error("Quantité insuffisante en stock")
             return jsonify({'erreur': 'Quantité insuffisante en stock'}), 400
-        prixbh = produit[2] or '0.00'  # Utiliser prixba comme prixbh
+        prixbh = produit[2] or '0.00'
 
         if client_id:
             logging.debug(f"Vérification du client: {client_id}")
