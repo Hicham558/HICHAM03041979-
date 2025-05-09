@@ -297,8 +297,7 @@ def ajouter_attache():
         if 'conn' in locals():
             conn.close()
 
-# Endpoint pour lister les ventes
-@app.route('/liste_ventes', methods=['GET'])
+# Endpoint pour lister les ventes@app.route('/liste_ventes', methods=['GET'])
 def liste_ventes():
     user_id = validate_user_id()
 
@@ -306,10 +305,10 @@ def liste_ventes():
         conn = get_conn()
         cursor = conn.cursor()
         query = '''
-            SELECT c.id AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
+            SELECT c.numero_comande AS numero_comande, c.numero_table, a.produit_bar, a.quantite, 
                    a.remarque, a.prixt, a.prixbh, c.send
             FROM comande c
-            LEFT JOIN attache a ON c.id = a.numero_comande
+            LEFT JOIN attache a ON c.numero_comande = a.numero_comande
             WHERE c.nature = %s AND c.numero_util = %s
         '''
         cursor.execute(query, ('vente', user_id))
@@ -336,7 +335,6 @@ def liste_ventes():
     finally:
         if 'conn' in locals():
             conn.close()
-
 
 # Lancer l'application
 if __name__ == '__main__':
