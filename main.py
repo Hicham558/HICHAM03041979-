@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
 import os
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
@@ -241,16 +243,13 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-
+# Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
-    # Vérifier l'authentification de l'utilisateur
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        print("Erreur: Utilisateur non authentifié")
-        return jsonify({"error": "Utilisateur non authentifié"}), 401
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Retourne l'erreur 401 si user_id est invalide
 
-    # Récupérer les données JSON
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes']:
         print("Erreur: Données de vente invalides ou aucune ligne fournie")
@@ -263,12 +262,11 @@ def valider_vente():
 
     conn = None
     try:
-        # Obtenir une connexion depuis le pool
-        conn = db_pool.getconn()
-        conn.autocommit = False  # Activer la gestion des transactions
+        conn = get_conn()
+        conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Insérer la commande dans comande
+        # Insérer la commande
         cur.execute("""
             INSERT INTO comande (numero_table, date_comande, etat_c, nature)
             VALUES (%s, %s, %s, %s)
@@ -277,18 +275,18 @@ def valider_vente():
         numero_comande = cur.fetchone()['numero_comande']
         print(f"Commande insérée: numero_comande={numero_comande}")
 
-        # Vérifier le stock pour chaque ligne
+        # Vérifier le stock
         for ligne in lignes:
             produit_bar = ligne.get('produit_bar')
             quantite = ligne.get('quantite')
-            cur.execute("SELECT QTE FROM item WHERE BAR = %s", (produit_bar,))
+            cur.execute("SELECT qte FROM item WHERE BAR = %s", (produit_bar,))
             stock = cur.fetchone()
             if not stock or stock['qte'] < quantite:
                 conn.rollback()
-                print(f"Erreur: Stock insuffisant pour le produit {produit_bar}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
+                print(f"Erreur: Stock insuffisant pour {produit_bar}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
                 return jsonify({"error": f"Stock insuffisant pour le produit {produit_bar}"}), 400
 
-        # Insérer les lignes dans attache et mettre à jour le stock
+        # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
                 INSERT INTO attache (numero_comande, produit_bar, quantite, prixt, remarque, prixbh)
@@ -301,28 +299,22 @@ def valider_vente():
                 ligne.get('remarque'),
                 ligne.get('prixbh')
             ))
-            # Mettre à jour le stock
-            cur.execute("""
-                UPDATE item SET QTE = QTE - %s WHERE BAR = %s
-            """, (ligne.get('quantite'), ligne.get('produit_bar')))
+            cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('produit_bar')))
 
-        # Valider la transaction
         conn.commit()
-        print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes insérées")
+        print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
         return jsonify({"numero_comande": numero_comande}), 200
 
     except Exception as e:
-        # Annuler la transaction en cas d'erreur
         if conn:
             conn.rollback()
-        print(f"Erreur lors de la validation de la vente: {str(e)}")
+        print(f"Erreur validation vente: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
     finally:
-        # Libérer la connexion
         if conn:
             cur.close()
-            db_pool.putconn(conn)
+            conn.close()
 
 # Lancer l'application
 if __name__ == '__main__':
