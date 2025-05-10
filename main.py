@@ -244,9 +244,6 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 # Endpoint pour valider une vente
-
-# Endpoint pour valider une vente
-# Endpoint pour valider une vente
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
@@ -290,8 +287,12 @@ def valider_vente():
 
         # Vérifier le stock
         for ligne in lignes:
-            numero_item = ligne.get('produit_bar')  # Mapper produit_bar à numero_item
+            numero_item = ligne.get('numero_item')  # Utiliser numero_item du JSON
             quantite = ligne.get('quantite')
+            if not numero_item:
+                conn.rollback()
+                print("Erreur: numero_item manquant dans une ligne")
+                return jsonify({"error": "numero_item manquant dans une ligne"}), 400
             cur.execute("SELECT qte FROM item WHERE BAR = %s", (numero_item,))
             stock = cur.fetchone()
             if not stock or stock['qte'] < quantite:
@@ -306,14 +307,14 @@ def valider_vente():
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
                 numero_comande,
-                ligne.get('produit_bar'),  # Utiliser produit_bar comme numero_item
+                ligne.get('numero_item'),  # Utiliser numero_item du JSON
                 ligne.get('quantite'),
                 ligne.get('prixt'),
                 ligne.get('remarque'),
                 ligne.get('prixbh'),
                 0  # achatfx toujours 0
             ))
-            cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('produit_bar')))
+            cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('numero_item')))
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
