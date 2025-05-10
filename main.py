@@ -295,14 +295,14 @@ def valider_vente():
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
                 numero_comande,
-                ligne.get('bar'),  # Utiliser bar comme numero_item
+                ligne.get('numero_item'),  # Utiliser bar comme numero_item
                 ligne.get('quantite'),
                 ligne.get('prixt'),
                 ligne.get('remarque'),
                 ligne.get('prixbh'),
                 0  # achatfx toujours 0
             ))
-            cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('bar')))
+            cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s", (ligne.get('quantite'), ligne.get('numero_item')))
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
