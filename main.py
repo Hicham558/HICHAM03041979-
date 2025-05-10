@@ -246,6 +246,7 @@ def ajouter_item():
 # Endpoint pour valider une vente
 
 # Endpoint pour valider une vente
+# Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -259,7 +260,7 @@ def valider_vente():
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    nature = data.get('nature', 'vente')
+    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
     lignes = data['lignes']
 
     conn = None
@@ -268,14 +269,25 @@ def valider_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Incrémenter le compteur pour nature
+        cur.execute("""
+            INSERT INTO counters (type, value)
+            VALUES (%s, 1)
+            ON CONFLICT (type)
+            DO UPDATE SET value = counters.value + 1
+            RETURNING value
+        """, (nature,))
+        compteur = cur.fetchone()['value']
+        print(f"Compteur mis à jour: type={nature}, value={compteur}")
+
         # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur))
         numero_comande = cur.fetchone()['numero_comande']
-        print(f"Commande insérée: numero_comande={numero_comande}")
+        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
 
         # Vérifier le stock
         for ligne in lignes:
@@ -291,15 +303,16 @@ def valider_vente():
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (
                 numero_comande,
                 ligne.get('produit_bar'),  # Utiliser produit_bar comme numero_item
                 ligne.get('quantite'),
                 ligne.get('prixt'),
                 ligne.get('remarque'),
-                ligne.get('prixbh')
+                ligne.get('prixbh'),
+                0  # achatfx toujours 0
             ))
             cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('produit_bar')))
 
