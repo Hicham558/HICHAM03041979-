@@ -278,10 +278,10 @@ def valider_vente():
 
         # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur,user_id)
+            VALUES (%s, %s, %s, %s, %s, %s,%s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur,user_id))
         numero_comande = cur.fetchone()['numero_comande']
         print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
 
@@ -291,18 +291,18 @@ def valider_vente():
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """, (
+                INSERT INTO attache (user_id,numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (user_id,
                 numero_comande,
-                ligne.get('bar'),  # Utiliser bar comme numero_item
+                ligne.get('numero_item'),  # Utiliser bar comme numero_item
                 ligne.get('quantite'),
                 ligne.get('prixt'),
                 ligne.get('remarque'),
                 ligne.get('prixbh'),
                 0  # achatfx toujours 0
             ))
-            cur.execute("UPDATE item SET qte = qte - %s WHERE BAR = %s", (ligne.get('quantite'), ligne.get('bar')))
+            cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s", (ligne.get('quantite'), ligne.get('numero_item')))
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
