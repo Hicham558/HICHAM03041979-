@@ -294,12 +294,12 @@ def valider_vente():
 
         # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id, payment_mode)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id, payment_mode))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id))
         numero_comande = cur.fetchone()['numero_comande']
-        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}, payment_mode={payment_mode}")
+        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
@@ -320,12 +320,27 @@ def valider_vente():
         if payment_mode == 'a_terme' and numero_table != 0:
             total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
             solde_change = total_sale - amount_paid  # Montant ajouté au solde (dette restante)
+
+            # Récupérer le solde actuel du client
+            cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_table,))
+            client = cur.fetchone()
+            if not client:
+                raise Exception(f"Client avec numero_clt={numero_table} non trouvé")
+
+            # Convertir le solde (VARCHAR) en float, ou 0 si vide/invalide
+            current_solde = float(client['solde']) if client['solde'] and client['solde'].strip() else 0.0
+            new_solde = current_solde + solde_change
+
+            # Convertir le nouveau solde en chaîne avec 2 décimales
+            new_solde_str = f"{new_solde:.2f}"
+
+            # Mettre à jour le solde dans la table client
             cur.execute("""
                 UPDATE client
-                SET solde = solde + %s
+                SET solde = %s
                 WHERE numero_clt = %s
-            """, (solde_change, numero_table))
-            print(f"Solde client mis à jour: numero_clt={numero_table}, solde_change={solde_change}, amount_paid={amount_paid}")
+            """, (new_solde_str, numero_table))
+            print(f"Solde client mis à jour: numero_clt={numero_table}, solde_change={solde_change}, amount_paid={amount_paid}, new_solde={new_solde_str}")
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
