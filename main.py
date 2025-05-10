@@ -244,6 +244,7 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 
+
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
@@ -319,7 +320,7 @@ def valider_vente():
         # Mise à jour du solde du client si vente à terme
         if payment_mode == 'a_terme' and numero_table != 0:
             total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
-            solde_change = total_sale - amount_paid  # Montant ajouté au solde (dette restante)
+            solde_change = amount_paid - total_sale  # Dette = montant versé - total (négatif si dette)
 
             # Récupérer le solde actuel du client
             cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_table,))
@@ -329,7 +330,7 @@ def valider_vente():
 
             # Convertir le solde (VARCHAR) en float, ou 0 si vide/invalide
             current_solde = float(client['solde']) if client['solde'] and client['solde'].strip() else 0.0
-            new_solde = current_solde + solde_change
+            new_solde = current_solde + solde_change  # Soustraire la dette (solde_change est négatif)
 
             # Convertir le nouveau solde en chaîne avec 2 décimales
             new_solde_str = f"{new_solde:.2f}"
