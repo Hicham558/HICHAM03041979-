@@ -243,7 +243,7 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# Endpoint pour valider une vente
+
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
@@ -258,8 +258,24 @@ def valider_vente():
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+    payment_mode = data.get('payment_mode', 'espece')  # Par défaut "espece"
+    amount_paid = float(data.get('amount_paid', 0))  # Montant versé, 0 par défaut
     lignes = data['lignes']
+    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+
+    # Validation du mode de paiement et du client
+    if payment_mode == 'a_terme' and numero_table == 0:
+        print("Erreur: Vente à terme sans client sélectionné")
+        return jsonify({"error": "Veuillez sélectionner un client pour une vente à terme"}), 400
+
+    if payment_mode == 'a_terme' and amount_paid < 0:
+        print("Erreur: Montant versé négatif")
+        return jsonify({"error": "Le montant versé ne peut pas être négatif"}), 400
+
+    total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
+    if payment_mode == 'a_terme' and amount_paid > total_sale:
+        print("Erreur: Montant versé supérieur au total de la vente")
+        return jsonify({"error": "Le montant versé ne peut pas dépasser le total de la vente"}), 400
 
     conn = None
     try:
@@ -278,31 +294,38 @@ def valider_vente():
 
         # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur,user_id)
-            VALUES (%s, %s, %s, %s, %s, %s,%s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id, payment_mode)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur,user_id))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id, payment_mode))
         numero_comande = cur.fetchone()['numero_comande']
-        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
-
-        # Vérifier le stock
-
+        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}, payment_mode={payment_mode}")
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (user_id,numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
+                INSERT INTO attache (user_id, numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (user_id,
-                numero_comande,
-                ligne.get('numero_item'),  # Utiliser bar comme numero_item
-                ligne.get('quantite'),
-                ligne.get('prixt'),
-                ligne.get('remarque'),
-                ligne.get('prixbh'),
-                0  # achatfx toujours 0
-            ))
+                  numero_comande,
+                  ligne.get('numero_item'),
+                  ligne.get('quantite'),
+                  ligne.get('prixt'),
+                  ligne.get('remarque'),
+                  ligne.get('prixbh'),
+                  0))
             cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s", (ligne.get('quantite'), ligne.get('numero_item')))
+
+        # Mise à jour du solde du client si vente à terme
+        if payment_mode == 'a_terme' and numero_table != 0:
+            total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
+            solde_change = total_sale - amount_paid  # Montant ajouté au solde (dette restante)
+            cur.execute("""
+                UPDATE client
+                SET solde = solde + %s
+                WHERE numero_clt = %s
+            """, (solde_change, numero_table))
+            print(f"Solde client mis à jour: numero_clt={numero_table}, solde_change={solde_change}, amount_paid={amount_paid}")
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
