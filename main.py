@@ -247,6 +247,7 @@ def ajouter_item():
 
 # Endpoint pour valider une vente
 # Endpoint pour valider une vente
+# Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -269,16 +270,14 @@ def valider_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Incrémenter le compteur pour nature
+        # Récupérer le dernier compteur pour cette nature
         cur.execute("""
-            INSERT INTO counters (type, value)
-            VALUES (%s, 1)
-            ON CONFLICT (type)
-            DO UPDATE SET value = counters.value + 1
-            RETURNING value
+            SELECT COALESCE(MAX(compteur), 0) as max_compteur
+            FROM comande
+            WHERE nature = %s
         """, (nature,))
-        compteur = cur.fetchone()['value']
-        print(f"Compteur mis à jour: type={nature}, value={compteur}")
+        compteur = cur.fetchone()['max_compteur'] + 1
+        print(f"Compteur calculé: nature={nature}, compteur={compteur}")
 
         # Insérer la commande
         cur.execute("""
