@@ -286,7 +286,19 @@ def valider_vente():
         print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
 
         # Vérifier le stock
-
+for ligne in lignes:
+    numero_item = ligne.get('numero_item')  # Utiliser numero_item (entier)
+    quantite = ligne.get('quantite')
+    if not isinstance(numero_item, int) or quantite is None:
+        conn.rollback()
+        print(f"Erreur: numero_item manquant ou invalide (doit être un entier) dans une ligne")
+        return jsonify({"error": "numero_item manquant ou invalide (doit être un entier)"}), 400
+    cur.execute("SELECT qte FROM item WHERE BAR = %s", (numero_item,))
+    stock = cur.fetchone()
+    if not stock or stock['qte'] < quantite:
+        conn.rollback()
+        print(f"Erreur: Stock insuffisant pour {numero_item}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
+        return jsonify({"error": f"Stock insuffisant pour le produit {numero_item}"}), 400
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
