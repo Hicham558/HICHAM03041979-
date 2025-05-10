@@ -244,6 +244,8 @@ def ajouter_item():
         return jsonify({'erreur': str(e)}), 500
 
 # Endpoint pour valider une vente
+
+# Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -277,23 +279,23 @@ def valider_vente():
 
         # Vérifier le stock
         for ligne in lignes:
-            produit_bar = ligne.get('produit_bar')
+            numero_item = ligne.get('produit_bar')  # Mapper produit_bar à numero_item
             quantite = ligne.get('quantite')
-            cur.execute("SELECT qte FROM item WHERE BAR = %s", (produit_bar,))
+            cur.execute("SELECT qte FROM item WHERE BAR = %s", (numero_item,))
             stock = cur.fetchone()
             if not stock or stock['qte'] < quantite:
                 conn.rollback()
-                print(f"Erreur: Stock insuffisant pour {produit_bar}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
-                return jsonify({"error": f"Stock insuffisant pour le produit {produit_bar}"}), 400
+                print(f"Erreur: Stock insuffisant pour {numero_item}, demandé={quantite}, disponible={stock['qte'] if stock else 0}")
+                return jsonify({"error": f"Stock insuffisant pour le produit {numero_item}"}), 400
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (numero_comande, produit_bar, quantite, prixt, remarque, prixbh)
+                INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (
                 numero_comande,
-                ligne.get('produit_bar'),
+                ligne.get('produit_bar'),  # Utiliser produit_bar comme numero_item
                 ligne.get('quantite'),
                 ligne.get('prixt'),
                 ligne.get('remarque'),
@@ -315,7 +317,6 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
-
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
