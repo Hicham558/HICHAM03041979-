@@ -384,16 +384,16 @@ def client_solde():
             cur.close()
             conn.close()
 
-# # --- Ventes du Jour ---
+# --- Ventes du Jour ---
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
         return user_id  # Erreur 401 si user_id invalide
 
-    # Récupérer les paramètres de filtre
-    selected_date = request.args.get('date')  # Format YYYY-MM-DD
-    numero_clt = request.args.get('numero_clt')  # ID du client ou vide
+    # Paramètres de filtre
+    selected_date = request.args.get('date')
+    numero_clt = request.args.get('numero_clt')
 
     try:
         conn = get_conn()
@@ -408,11 +408,10 @@ def ventes_jour():
             except ValueError:
                 return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
         else:
-            # Par défaut, utiliser la date du jour
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Construire la requête SQL dynamiquement
+        # Requête SQL
         query = """
             SELECT 
                 c.numero_comande,
@@ -435,7 +434,6 @@ def ventes_jour():
         """
         params = [user_id, date_start, date_end]
 
-        # Ajouter le filtre client si spécifié
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -468,13 +466,12 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),  # Conserver comme chaîne
-                'remarque': str(row['remarque'])  # Prix unitaire
+                'prixt': str(row['prixt']),
+                'remarque': str(row['remarque'])
             })
 
             total += float(row['prixt'] or 0)
 
-        # Séparer tickets et bons
         for vente in ventes_map.values():
             if vente['nature'] == 'TICKET':
                 tickets.append(vente)
