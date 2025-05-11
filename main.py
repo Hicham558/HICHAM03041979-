@@ -357,6 +357,33 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
+
+@app.route('/client_solde', methods=['GET'])
+def client_solde():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT numero_clt, COALESCE(solde, '0.00') as solde
+            FROM client
+            WHERE user_id = %s
+        """, (user_id,))
+        soldes = cur.fetchall()
+        print(f"Soldes récupérés: {len(soldes)} clients")
+        return jsonify(soldes), 200
+    except Exception as e:
+        print(f"Erreur récupération soldes: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
