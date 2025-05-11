@@ -26,13 +26,13 @@ def validate_user_id():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT statut FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
+        cur.execute("SELECT statue FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         user = cur.fetchone()
         cur.close()
         conn.close()
         if not user:
             return jsonify({'erreur': 'Utilisateur invalide'}), 401
-        return user_id, numero_util, user[0]  # Retourne user_id, numero_util, statut
+        return user_id, numero_util, user[0]  # Retourne user_id, numero_util, statue
     except Exception as e:
         return jsonify({'erreur': f'Erreur validation utilisateur : {str(e)}'}), 500
 
@@ -58,7 +58,7 @@ def login():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_util, statut, password2, user_id FROM utilisateur WHERE nom = %s", (nom,))
+        cur.execute("SELECT numero_util, statue, password2, user_id FROM utilisateur WHERE nom = %s", (nom,))
         user = cur.fetchone()
         cur.close()
         conn.close()
@@ -67,7 +67,7 @@ def login():
             return jsonify({'erreur': 'Nom ou mot de passe incorrect'}), 401
         return jsonify({
             'numero_util': user[0],
-            'statut': user[1],
+            'statue': user[1],
             'user_id': user[3],
             'message': 'Connexion réussie'
         }), 200
@@ -80,9 +80,9 @@ def ajouter_utilisateur():
     validation_result = validate_user_id()
     if isinstance(validation_result, tuple):
         return validation_result
-    user_id, numero_util, statut = validation_result
+    user_id, numero_util, statue = validation_result
 
-    if statut != 'admin':
+    if statue != 'admin':
         return jsonify({'erreur': 'Action réservée aux administrateurs'}), 403
 
     data = request.get_json()
@@ -95,14 +95,14 @@ def ajouter_utilisateur():
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO utilisateur (statut, nom, password2, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
+            "INSERT INTO utilisateur (statue, nom, password2, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
             ('emplo', nom, password, user_id)  # Stockage en texte brut
         )
         new_numero_util = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Utilisateur ajouté', 'numero_util': new_numero_util}), 201
+        return jsonify({'statue': 'Utilisateur ajouté', 'numero_util': new_numero_util}), 201
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
@@ -112,15 +112,15 @@ def liste_utilisateurs():
     validation_result = validate_user_id()
     if isinstance(validation_result, tuple):
         return validation_result
-    user_id, numero_util, statut = validation_result
+    user_id, numero_util, statue = validation_result
 
-    if statut != 'admin':
+    if statue != 'admin':
         return jsonify({'erreur': 'Action réservée aux administrateurs'}), 403
 
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT numero_util, nom, statut FROM utilisateur WHERE user_id = %s ORDER BY nom", (user_id,))
+        cur.execute("SELECT numero_util, nom, statue FROM utilisateur WHERE user_id = %s ORDER BY nom", (user_id,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -129,7 +129,7 @@ def liste_utilisateurs():
             {
                 'numero_util': row['numero_util'],
                 'nom': row['nom'],
-                'statut': row['statut']
+                'statue': row['statue']
             }
             for row in rows
         ]
@@ -200,7 +200,7 @@ def ajouter_client():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Client ajouté', 'id': client_id}), 201
+        return jsonify({'statue': 'Client ajouté', 'id': client_id}), 201
     except ValueError:
         return jsonify({'erreur': 'Le solde doit être un nombre valide'}), 400
     except Exception as e:
@@ -269,7 +269,7 @@ def ajouter_fournisseur():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Fournisseur ajouté', 'id': fournisseur_id}), 201
+        return jsonify({'statue': 'Fournisseur ajouté', 'id': fournisseur_id}), 201
     except ValueError:
         return jsonify({'erreur': 'Le solde doit être un nombre valide'}), 400
     except Exception as e:
@@ -344,7 +344,7 @@ def ajouter_item():
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Item ajouté'}), 201
+        return jsonify({'statue': 'Item ajouté'}), 201
     except ValueError:
         return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
