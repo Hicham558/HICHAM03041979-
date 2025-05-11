@@ -384,22 +384,35 @@ def client_solde():
             cur.close()
             conn.close()
 
-# --- Ventes du Jour ---
+# # --- Ventes du Jour ---
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
         return user_id  # Erreur 401 si user_id invalide
 
+    # Récupérer les paramètres de filtre
+    selected_date = request.args.get('date')  # Format YYYY-MM-DD
+    numero_clt = request.args.get('numero_clt')  # ID du client ou vide
+
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de la journée en cours (de minuit à 23:59:59)
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+        # Définir la plage de dates
+        if selected_date:
+            try:
+                date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
+        else:
+            # Par défaut, utiliser la date du jour
+            date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête SQL pour récupérer les ventes du jour
+        # Construire la requête SQL dynamiquement
         query = """
             SELECT 
                 c.numero_comande,
@@ -419,9 +432,20 @@ def ventes_jour():
             WHERE c.user_id = %s 
             AND c.date_comande >= %s 
             AND c.date_comande <= %s
-            ORDER BY c.numero_comande DESC
         """
-        cur.execute(query, (user_id, today_start, today_end))
+        params = [user_id, date_start, date_end]
+
+        # Ajouter le filtre client si spécifié
+        if numero_clt:
+            if numero_clt == '0':
+                query += " AND c.numero_table = 0"
+            else:
+                query += " AND c.numero_table = %s"
+                params.append(int(numero_clt))
+
+        query += " ORDER BY c.numero_comande DESC"
+
+        cur.execute(query, params)
         rows = cur.fetchall()
 
         # Organiser les données
@@ -444,7 +468,7 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),  # Conserver comme chaîne pour cohérence
+                'prixt': str(row['prixt']),  # Conserver comme chaîne
                 'remarque': str(row['remarque'])  # Prix unitaire
             })
 
