@@ -574,6 +574,85 @@ def articles_plus_vendus():
         print(f"Erreur récupération articles les plus vendus: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+# --- Bénéfice par date ---
+@app.route('/profit_by_date', methods=['GET'])
+def profit_by_date():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    selected_date = request.args.get('date')
+    numero_clt = request.args.get('numero_clt')
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Définir la plage de dates (7 jours, incluant la date sélectionnée)
+        if selected_date:
+            try:
+                date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+                date_start = (date_obj - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+            except ValueError:
+                return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
+        else:
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+            date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Requête SQL pour calculer le bénéfice
+        query = """
+            SELECT 
+                DATE(c.date_comande) AS date,
+                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS profit
+            FROM attache a
+            JOIN comande c ON a.numero_comande = c.numero_comande
+            JOIN item i ON a.numero_item = i.numero_item
+            WHERE c.user_id = %s
+            AND c.date_comande >= %s
+            AND c.date_comande <= %s
+        """
+        params = [user_id, date_start, date_end]
+
+        if numero_clt:
+            if numero_clt == '0':
+                query += " AND c.numero_table = 0"
+            else:
+                query += " AND c.numero_table = %s"
+                params.append(int(numero_clt))
+
+        query += """
+            GROUP BY DATE(c.date_comande)
+            ORDER BY DATE(c.date_comande) ASC
+        """
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        # Remplir les 7 jours, même ceux sans données
+        profits = []
+        current_date = date_start
+        while current_date <= date_end:
+            date_str = current_date.strftime('%Y-%m-%d')
+            row = next((r for r in rows if r['date'].strftime('%Y-%m-%d') == date_str), None)
+            profits.append({
+                'date': date_str,
+                'profit': float(row['profit']) if row else 0.0
+            })
+            current_date += timedelta(days=1)
+
+        cur.close()
+        conn.close()
+
+        return jsonify(profits), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération bénéfice par date: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
