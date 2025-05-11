@@ -243,7 +243,8 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# Endpoint pour valider une vente
+
+
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
@@ -258,8 +259,24 @@ def valider_vente():
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+    payment_mode = data.get('payment_mode', 'espece')  # Par défaut "espece"
+    amount_paid = float(data.get('amount_paid', 0))  # Montant versé, 0 par défaut
     lignes = data['lignes']
+    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+
+    # Validation du mode de paiement et du client
+    if payment_mode == 'a_terme' and numero_table == 0:
+        print("Erreur: Vente à terme sans client sélectionné")
+        return jsonify({"error": "Veuillez sélectionner un client pour une vente à terme"}), 400
+
+    if payment_mode == 'a_terme' and amount_paid < 0:
+        print("Erreur: Montant versé négatif")
+        return jsonify({"error": "Le montant versé ne peut pas être négatif"}), 400
+
+    total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
+    if payment_mode == 'a_terme' and amount_paid > total_sale:
+        print("Erreur: Montant versé supérieur au total de la vente")
+        return jsonify({"error": "Le montant versé ne peut pas dépasser le total de la vente"}), 400
 
     conn = None
     try:
@@ -278,31 +295,53 @@ def valider_vente():
 
         # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur,user_id)
-            VALUES (%s, %s, %s, %s, %s, %s,%s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur,user_id))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id))
         numero_comande = cur.fetchone()['numero_comande']
         print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
-
-        # Vérifier le stock
-
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
-                INSERT INTO attache (user_id,numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
+                INSERT INTO attache (user_id, numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (user_id,
-                numero_comande,
-                ligne.get('numero_item'),  # Utiliser bar comme numero_item
-                ligne.get('quantite'),
-                ligne.get('prixt'),
-                ligne.get('remarque'),
-                ligne.get('prixbh'),
-                0  # achatfx toujours 0
-            ))
+                  numero_comande,
+                  ligne.get('numero_item'),
+                  ligne.get('quantite'),
+                  ligne.get('prixt'),
+                  ligne.get('remarque'),
+                  ligne.get('prixbh'),
+                  0))
             cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s", (ligne.get('quantite'), ligne.get('numero_item')))
+
+        # Mise à jour du solde du client si vente à terme
+        if payment_mode == 'a_terme' and numero_table != 0:
+            total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
+            solde_change = amount_paid - total_sale  # Dette = montant versé - total (négatif si dette)
+
+            # Récupérer le solde actuel du client
+            cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_table,))
+            client = cur.fetchone()
+            if not client:
+                raise Exception(f"Client avec numero_clt={numero_table} non trouvé")
+
+            # Convertir le solde (VARCHAR) en float, ou 0 si vide/invalide
+            current_solde = float(client['solde']) if client['solde'] and client['solde'].strip() else 0.0
+            new_solde = current_solde + solde_change  # Soustraire la dette (solde_change est négatif)
+
+            # Convertir le nouveau solde en chaîne avec 2 décimales
+            new_solde_str = f"{new_solde:.2f}"
+
+            # Mettre à jour le solde dans la table client
+            cur.execute("""
+                UPDATE client
+                SET solde = %s
+                WHERE numero_clt = %s
+            """, (new_solde_str, numero_table))
+            print(f"Solde client mis à jour: numero_clt={numero_table}, solde_change={solde_change}, amount_paid={amount_paid}, new_solde={new_solde_str}")
 
         conn.commit()
         print(f"Vente validée: numero_comande={numero_comande}, {len(lignes)} lignes")
@@ -318,6 +357,33 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
+
+@app.route('/client_solde', methods=['GET'])
+def client_solde():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT numero_clt, COALESCE(solde, '0.00') as solde
+            FROM client
+            WHERE user_id = %s
+        """, (user_id,))
+        soldes = cur.fetchall()
+        print(f"Soldes récupérés: {len(soldes)} clients")
+        return jsonify(soldes), 200
+    except Exception as e:
+        print(f"Erreur récupération soldes: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
