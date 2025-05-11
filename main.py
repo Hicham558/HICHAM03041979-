@@ -3,7 +3,8 @@ from flask_cors import CORS
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
+import bcrypt
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
@@ -16,12 +17,25 @@ def get_conn():
         url = url.replace("postgres://", "postgresql://", 1)
     return psycopg2.connect(url, sslmode='require')
 
-# Vérification de l'utilisateur (X-User-ID)
+# Vérification de l'utilisateur (X-User-ID et X-Numero-Util)
 def validate_user_id():
     user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    return user_id
+    numero_util = request.headers.get('X-Numero-Util')
+    if not user_id or not numero_util:
+        return jsonify({'erreur': 'Identifiant utilisateur ou numéro utilisateur requis'}), 401
+    
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT statut FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not user:
+            return jsonify({'erreur': 'Utilisateur invalide'}), 401
+        return user_id, numero_util, user[0]  # Retourne user_id, numero_util, statut
+    except Exception as e:
+        return jsonify({'erreur': f'Erreur validation utilisateur : {str(e)}'}), 500
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
@@ -33,12 +47,105 @@ def index():
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
 
+# Authentification de l'utilisateur
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    nom = data.get('nom')
+    password = data.get('password')
+    if not nom or not password:
+        return jsonify({'erreur': 'Nom et mot de passe requis'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT numero_util, statut, password2, user_id FROM utilisateur WHERE nom = %s", (nom,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not user or not bcrypt.checkpw(password.encode('utf-8'), user[2].encode('utf-8')):
+            return jsonify({'erreur': 'Nom ou mot de passe incorrect'}), 401
+        return jsonify({
+            'numero_util': user[0],
+            'statut': user[1],
+            'user_id': user[3],
+            'message': 'Connexion réussie'
+        }), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+# Ajouter un utilisateur (réservé aux admins)
+@app.route('/ajouter_utilisateur', methods=['POST'])
+def ajouter_utilisateur():
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result  # Erreur 401 ou 500
+    user_id, numero_util, statut = validation_result
+
+    if statut != 'admin':
+        return jsonify({'erreur': 'Action réservée aux administrateurs'}), 403
+
+    data = request.get_json()
+    nom = data.get('nom')
+    password = data.get('password')
+    if not nom or not password:
+        return jsonify({'erreur': 'Nom et mot de passe requis'}), 400
+
+    try:
+        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO utilisateur (statut, nom, password2, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
+            ('emplo', nom, hashed_password, user_id)
+        )
+        new_numero_util = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Utilisateur ajouté', 'numero_util': new_numero_util}), 201
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+# Lister les utilisateurs (réservé aux admins)
+@app.route('/liste_utilisateurs', methods=['GET'])
+def liste_utilisateurs():
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result  # Erreur 401 ou 500
+    user_id, numero_util, statut = validation_result
+
+    if statut != 'admin':
+        return jsonify({'erreur': 'Action réservée aux administrateurs'}), 403
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numero_util, nom, statut FROM utilisateur WHERE user_id = %s ORDER BY nom", (user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        utilisateurs = [
+            {
+                'numero_util': row['numero_util'],
+                'nom': row['nom'],
+                'statut': row['statut']
+            }
+            for row in rows
+        ]
+        return jsonify(utilisateurs), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 # --- Clients ---
 @app.route('/liste_clients', methods=['GET'])
 def liste_clients():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):  # Si validate_user_id retourne une erreur
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     try:
         conn = get_conn()
@@ -65,9 +172,10 @@ def liste_clients():
 
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     data = request.get_json()
     nom = data.get('nom')
@@ -76,12 +184,11 @@ def ajouter_client():
     contact = data.get('contact')
     adresse = data.get('adresse')
 
-    # Validation des champs obligatoires
     if not all([nom, solde is not None, reference]):
         return jsonify({'erreur': 'Champs obligatoires manquants (nom, solde, reference)'}), 400
 
     try:
-        solde = float(solde)  # Convertir en float
+        solde = float(solde)
         if solde < 0:
             return jsonify({'erreur': 'Le solde doit être positif'}), 400
 
@@ -104,9 +211,10 @@ def ajouter_client():
 # --- Fournisseurs ---
 @app.route('/liste_fournisseurs', methods=['GET'])
 def liste_fournisseurs():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     try:
         conn = get_conn()
@@ -133,9 +241,10 @@ def liste_fournisseurs():
 
 @app.route('/ajouter_fournisseur', methods=['POST'])
 def ajouter_fournisseur():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     data = request.get_json()
     nom = data.get('nom')
@@ -171,9 +280,10 @@ def ajouter_fournisseur():
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     try:
         conn = get_conn()
@@ -190,7 +300,7 @@ def liste_produits():
                 'DESIGNATION': row[2],
                 'QTE': row[3],
                 'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00'  # prixba est VARCHAR, donc on retourne une chaîne
+                'PRIXBA': row[5] or '0.00'
             }
             for row in rows
         ]
@@ -200,16 +310,17 @@ def liste_produits():
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     data = request.get_json()
     designation = data.get('designation')
     bar = data.get('bar')
     prix = data.get('prix')
     qte = data.get('qte')
-    prixba = data.get('prixba')  # Prix d'achat (VARCHAR)
+    prixba = data.get('prixba')
 
     if not all([designation, bar, prix is not None, qte is not None]):
         return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
@@ -220,7 +331,6 @@ def ajouter_item():
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
-        # Vérifier si le code-barres existe déjà
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
@@ -229,7 +339,6 @@ def ajouter_item():
             conn.close()
             return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
 
-        # Insérer le produit avec prixba
         cur.execute(
             "INSERT INTO item (designation, bar, prix, qte, prixba, user_id) VALUES (%s, %s, %s, %s, %s, %s)",
             (designation, bar, prix, qte, prixba or '0.00', user_id)
@@ -243,14 +352,13 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-
-
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id  # Retourne l'erreur 401 si user_id est invalide
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, numero_util, _ = validation_result
 
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes']:
@@ -259,12 +367,11 @@ def valider_vente():
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
-    payment_mode = data.get('payment_mode', 'espece')  # Par défaut "espece"
-    amount_paid = float(data.get('amount_paid', 0))  # Montant versé, 0 par défaut
+    payment_mode = data.get('payment_mode', 'espece')
+    amount_paid = float(data.get('amount_paid', 0))
     lignes = data['lignes']
-    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+    nature = "TICKET" if numero_table == 0 else "BON DE L."
 
-    # Validation du mode de paiement et du client
     if payment_mode == 'a_terme' and numero_table == 0:
         print("Erreur: Vente à terme sans client sélectionné")
         return jsonify({"error": "Veuillez sélectionner un client pour une vente à terme"}), 400
@@ -284,7 +391,6 @@ def valider_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Récupérer le dernier compteur pour cette nature
         cur.execute("""
             SELECT COALESCE(MAX(compteur), 0) as max_compteur
             FROM comande
@@ -293,16 +399,14 @@ def valider_vente():
         compteur = cur.fetchone()['max_compteur'] + 1
         print(f"Compteur calculé: nature={nature}, compteur={compteur}")
 
-        # Insérer la commande
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id, numero_util)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id, numero_util))
         numero_comande = cur.fetchone()['numero_comande']
-        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
+        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}, numero_util={numero_util}")
 
-        # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
             cur.execute("""
                 INSERT INTO attache (user_id, numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
@@ -317,25 +421,19 @@ def valider_vente():
                   0))
             cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s", (ligne.get('quantite'), ligne.get('numero_item')))
 
-        # Mise à jour du solde du client si vente à terme
         if payment_mode == 'a_terme' and numero_table != 0:
             total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
-            solde_change = amount_paid - total_sale  # Dette = montant versé - total (négatif si dette)
+            solde_change = amount_paid - total_sale
 
-            # Récupérer le solde actuel du client
             cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_table,))
             client = cur.fetchone()
             if not client:
                 raise Exception(f"Client avec numero_clt={numero_table} non trouvé")
 
-            # Convertir le solde (VARCHAR) en float, ou 0 si vide/invalide
             current_solde = float(client['solde']) if client['solde'] and client['solde'].strip() else 0.0
-            new_solde = current_solde + solde_change  # Soustraire la dette (solde_change est négatif)
-
-            # Convertir le nouveau solde en chaîne avec 2 décimales
+            new_solde = current_solde + solde_change
             new_solde_str = f"{new_solde:.2f}"
 
-            # Mettre à jour le solde dans la table client
             cur.execute("""
                 UPDATE client
                 SET solde = %s
@@ -360,9 +458,10 @@ def valider_vente():
 
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si user_id invalide
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     conn = None
     try:
@@ -387,11 +486,11 @@ def client_solde():
 # --- Ventes du Jour ---
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si user_id invalide
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
-    # Paramètres de filtre
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
 
@@ -399,7 +498,6 @@ def ventes_jour():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -411,7 +509,6 @@ def ventes_jour():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête SQL
         query = """
             SELECT 
                 c.numero_comande,
@@ -446,7 +543,6 @@ def ventes_jour():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Organiser les données
         tickets = []
         bons = []
         total = 0.0
@@ -497,11 +593,11 @@ def ventes_jour():
 # --- Articles les plus vendus ---
 @app.route('/articles_plus_vendus', methods=['GET'])
 def articles_plus_vendus():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si user_id invalide
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
-    # Paramètres de filtre
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
 
@@ -509,7 +605,6 @@ def articles_plus_vendus():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -521,7 +616,6 @@ def articles_plus_vendus():
             date_start = None
             date_end = None
 
-        # Requête SQL
         query = """
             SELECT 
                 i.designation,
@@ -553,7 +647,6 @@ def articles_plus_vendus():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Formater les données
         articles = [
             {
                 'designation': row['designation'],
@@ -577,9 +670,10 @@ def articles_plus_vendus():
 # --- Bénéfice par date ---
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
@@ -588,7 +682,6 @@ def profit_by_date():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates (7 jours, incluant la date sélectionnée)
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -600,7 +693,6 @@ def profit_by_date():
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-        # Requête SQL pour calculer le bénéfice
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
@@ -629,7 +721,6 @@ def profit_by_date():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Remplir les 7 jours, même ceux sans données
         profits = []
         current_date = date_start
         while current_date <= date_end:
@@ -653,28 +744,27 @@ def profit_by_date():
         print(f"Erreur récupération bénéfice par date: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
-
-
+# --- Dashboard ---
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
-    userId = validate_user_id()
-    if not isinstance(userId, str):
-        return userId
+    validation_result = validate_user_id()
+    if isinstance(validation_result, tuple):
+        return validation_result
+    user_id, _, _ = validation_result
 
-    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
+    period = request.args.get('period', 'day')
+
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:  # day
+        else:
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête pour les KPI principaux
         query_kpi = """
             SELECT 
                 COALESCE(SUM(a.prixt::float), 0) AS total_ca,
@@ -687,14 +777,12 @@ def dashboard():
             AND c.date_comande >= %s
             AND c.date_comande <= %s
         """
-        cur.execute(query_kpi, (userId, date_start, date_end))
+        cur.execute(query_kpi, (user_id, date_start, date_end))
         kpi_data = cur.fetchone()
 
-        # Requête pour les articles en rupture de stock
-        cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
+        cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (user_id,))
         low_stock_count = cur.fetchone()['low_stock']
 
-        # Requête pour le top client
         query_top_client = """
             SELECT 
                 cl.nom,
@@ -709,10 +797,9 @@ def dashboard():
             ORDER BY client_ca DESC
             LIMIT 1
         """
-        cur.execute(query_top_client, (userId, date_start, date_end))
+        cur.execute(query_top_client, (user_id, date_start, date_end))
         top_client = cur.fetchone()
 
-        # Requête pour les données du graphique (CA par jour)
         query_chart = """
             SELECT 
                 DATE(c.date_comande) AS sale_date,
@@ -725,13 +812,12 @@ def dashboard():
             GROUP BY DATE(c.date_comande)
             ORDER BY sale_date
         """
-        cur.execute(query_chart, (userId, date_start, date_end))
+        cur.execute(query_chart, (user_id, date_start, date_end))
         chart_data = cur.fetchall()
 
         cur.close()
         conn.close()
 
-        # Formater les données du graphique
         chart_labels = []
         chart_values = []
         current_date = date_start
