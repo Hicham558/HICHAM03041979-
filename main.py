@@ -494,6 +494,85 @@ def ventes_jour():
         print(f"Erreur récupération ventes du jour: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+# --- Articles les plus vendus ---
+@app.route('/articles_plus_vendus', methods=['GET'])
+def articles_plus_vendus():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    # Paramètres de filtre
+    selected_date = request.args.get('date')
+    numero_clt = request.args.get('numero_clt')
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Définir la plage de dates
+        if selected_date:
+            try:
+                date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
+        else:
+            date_start = None
+            date_end = None
+
+        # Requête SQL
+        query = """
+            SELECT 
+                i.designation,
+                SUM(a.quantite) AS quantite
+            FROM attache a
+            JOIN comande c ON a.numero_comande = c.numero_comande
+            JOIN item i ON a.numero_item = i.numero_item
+            WHERE c.user_id = %s
+        """
+        params = [user_id]
+
+        if date_start and date_end:
+            query += " AND c.date_comande >= %s AND c.date_comande <= %s"
+            params.extend([date_start, date_end])
+
+        if numero_clt:
+            if numero_clt == '0':
+                query += " AND c.numero_table = 0"
+            else:
+                query += " AND c.numero_table = %s"
+                params.append(int(numero_clt))
+
+        query += """
+            GROUP BY i.designation
+            ORDER BY quantite DESC
+            LIMIT 10
+        """
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        # Formater les données
+        articles = [
+            {
+                'designation': row['designation'],
+                'quantite': int(row['quantite'])
+            }
+            for row in rows
+        ]
+
+        cur.close()
+        conn.close()
+
+        return jsonify(articles), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération articles les plus vendus: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
 
 # Lancer l'application
 if __name__ == '__main__':
