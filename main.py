@@ -653,6 +653,63 @@ def profit_by_date():
         print(f"Erreur récupération bénéfice par date: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+
+@app.route('/dashboard', methods=['GET'])
+def dashboard():
+    userId = validate_user_id()
+    if not isinstance(userId, str):
+        return userId
+
+    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Définir la plage de dates
+        if period == 'week':
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+            date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+        else:  # day
+            date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # Requête pour les KPI
+        query = """
+            SELECT 
+                COALESCE(SUM(a.prixt::float), 0) AS total_ca,
+                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
+                COUNT(DISTINCT c.numero_comande) AS sales_count
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
+            JOIN item i ON a.numero_item = i.numero_item
+            WHERE c.user_id = %s
+            AND c.date_comande >= %s
+            AND c.date_comande <= %s
+        """
+        cur.execute(query, (userId, date_start, date_end))
+        kpi_data = cur.fetchone()
+
+        # Requête pour les articles en rupture de stock
+        cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
+        low_stock_count = cur.fetchone()['low_stock']
+
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            'total_ca': float(kpi_data['total_ca'] or 0),
+            'total_profit': float(kpi_data['total_profit'] or 0),
+            'sales_count': int(kpi_data['sales_count'] or 0),
+            'low_stock_items': int(low_stock_count or 0)
+        }), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération KPI: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
