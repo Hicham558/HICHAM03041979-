@@ -4,7 +4,6 @@ import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
-import bcrypt
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
@@ -64,7 +63,7 @@ def login():
         cur.close()
         conn.close()
 
-        if not user or not bcrypt.checkpw(password.encode('utf-8'), user[2].encode('utf-8')):
+        if not user or user[2] != password:  # Comparaison en texte brut
             return jsonify({'erreur': 'Nom ou mot de passe incorrect'}), 401
         return jsonify({
             'numero_util': user[0],
@@ -80,7 +79,7 @@ def login():
 def ajouter_utilisateur():
     validation_result = validate_user_id()
     if isinstance(validation_result, tuple):
-        return validation_result  # Erreur 401 ou 500
+        return validation_result
     user_id, numero_util, statut = validation_result
 
     if statut != 'admin':
@@ -93,12 +92,11 @@ def ajouter_utilisateur():
         return jsonify({'erreur': 'Nom et mot de passe requis'}), 400
 
     try:
-        hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO utilisateur (statut, nom, password2, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
-            ('emplo', nom, hashed_password, user_id)
+            ('emplo', nom, password, user_id)  # Stockage en texte brut
         )
         new_numero_util = cur.fetchone()[0]
         conn.commit()
@@ -113,7 +111,7 @@ def ajouter_utilisateur():
 def liste_utilisateurs():
     validation_result = validate_user_id()
     if isinstance(validation_result, tuple):
-        return validation_result  # Erreur 401 ou 500
+        return validation_result
     user_id, numero_util, statut = validation_result
 
     if statut != 'admin':
