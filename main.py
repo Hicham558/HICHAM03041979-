@@ -384,6 +384,96 @@ def client_solde():
             cur.close()
             conn.close()
 
+# --- Ventes du Jour ---
+@app.route('/ventes_jour', methods=['GET'])
+def ventes_jour():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Définir la plage de la journée en cours (de minuit à 23:59:59)
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # Requête SQL pour récupérer les ventes du jour
+        query = """
+            SELECT 
+                c.numero_comande,
+                c.date_comande,
+                c.nature,
+                c.numero_table,
+                cl.nom AS client_nom,
+                a.numero_item,
+                a.quantite,
+                a.prixt,
+                a.remarque,
+                i.designation
+            FROM comande c
+            LEFT JOIN client cl ON c.numero_table = cl.numero_clt
+            JOIN attache a ON c.numero_comande = a.numero_comande
+            JOIN item i ON a.numero_item = i.numero_item
+            WHERE c.user_id = %s 
+            AND c.date_comande >= %s 
+            AND c.date_comande <= %s
+            ORDER BY c.numero_comande DESC
+        """
+        cur.execute(query, (user_id, today_start, today_end))
+        rows = cur.fetchall()
+
+        # Organiser les données
+        tickets = []
+        bons = []
+        total = 0.0
+        ventes_map = {}
+
+        for row in rows:
+            if row['numero_comande'] not in ventes_map:
+                ventes_map[row['numero_comande']] = {
+                    'numero_comande': row['numero_comande'],
+                    'date_comande': row['date_comande'].isoformat(),
+                    'nature': row['nature'],
+                    'client_nom': 'Comptoir' if row['numero_table'] == 0 else row['client_nom'],
+                    'lignes': []
+                }
+
+            ventes_map[row['numero_comande']]['lignes'].append({
+                'numero_item': row['numero_item'],
+                'designation': row['designation'],
+                'quantite': row['quantite'],
+                'prixt': str(row['prixt']),  # Conserver comme chaîne pour cohérence
+                'remarque': str(row['remarque'])  # Prix unitaire
+            })
+
+            total += float(row['prixt'] or 0)
+
+        # Séparer tickets et bons
+        for vente in ventes_map.values():
+            if vente['nature'] == 'TICKET':
+                tickets.append(vente)
+            elif vente['nature'] == 'BON DE L.':
+                bons.append(vente)
+
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            'tickets': tickets,
+            'bons': bons,
+            'total': f"{total:.2f}"
+        }), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération ventes du jour: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
