@@ -3,7 +3,7 @@ from flask_cors import CORS
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime,timedelta
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
