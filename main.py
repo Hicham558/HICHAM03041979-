@@ -654,6 +654,7 @@ def profit_by_date():
         return jsonify({'erreur': str(e)}), 500
 
 
+
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
@@ -673,8 +674,8 @@ def dashboard():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête pour les KPI
-        query = """
+        # Requête pour les KPI principaux
+        query_kpi = """
             SELECT 
                 COALESCE(SUM(a.prixt::float), 0) AS total_ca,
                 COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
@@ -686,21 +687,73 @@ def dashboard():
             AND c.date_comande >= %s
             AND c.date_comande <= %s
         """
-        cur.execute(query, (userId, date_start, date_end))
+        cur.execute(query_kpi, (userId, date_start, date_end))
         kpi_data = cur.fetchone()
 
         # Requête pour les articles en rupture de stock
         cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
         low_stock_count = cur.fetchone()['low_stock']
 
+        # Requête pour le top client
+        query_top_client = """
+            SELECT 
+                cl.nom,
+                COALESCE(SUM(a.prixt::float), 0) AS client_ca
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
+            LEFT JOIN client cl ON c.numero_table = cl.numero_clt
+            WHERE c.user_id = %s
+            AND c.date_comande >= %s
+            AND c.date_comande <= %s
+            GROUP BY cl.nom
+            ORDER BY client_ca DESC
+            LIMIT 1
+        """
+        cur.execute(query_top_client, (userId, date_start, date_end))
+        top_client = cur.fetchone()
+
+        # Requête pour les données du graphique (CA par jour)
+        query_chart = """
+            SELECT 
+                DATE(c.date_comande) AS sale_date,
+                COALESCE(SUM(a.prixt::float), 0) AS daily_ca
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
+            WHERE c.user_id = %s
+            AND c.date_comande >= %s
+            AND c.date_comande <= %s
+            GROUP BY DATE(c.date_comande)
+            ORDER BY sale_date
+        """
+        cur.execute(query_chart, (userId, date_start, date_end))
+        chart_data = cur.fetchall()
+
         cur.close()
         conn.close()
+
+        # Formater les données du graphique
+        chart_labels = []
+        chart_values = []
+        current_date = date_start
+        while current_date <= date_end:
+            chart_labels.append(current_date.strftime('%Y-%m-%d'))
+            daily_ca = next((row['daily_ca'] for row in chart_data if row['sale_date'].strftime('%Y-%m-%d') == current_date.strftime('%Y-%m-%d')), 0)
+            chart_values.append(float(daily_ca))
+            current_date += timedelta(days=1)
 
         return jsonify({
             'total_ca': float(kpi_data['total_ca'] or 0),
             'total_profit': float(kpi_data['total_profit'] or 0),
             'sales_count': int(kpi_data['sales_count'] or 0),
-            'low_stock_items': int(low_stock_count or 0)
+            'low_stock_items': int(low_stock_count or 0),
+            'top_client': {
+                'name': top_client['nom'] if top_client else 'N/A',
+                'ca': float(top_client['client_ca'] or 0) if top_client else 0
+            },
+            'chart_data': {
+                'labels': chart_labels,
+                'values': chart_values
+            }
         }), 200
 
     except Exception as e:
