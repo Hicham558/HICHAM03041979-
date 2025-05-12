@@ -394,6 +394,8 @@ def client_solde():
             conn.close()
 
 # --- Ventes du Jour ---
+
+
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
@@ -420,7 +422,7 @@ def ventes_jour():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête SQL
+        # Requête SQL avec jointure sur utilisateur
         query = """
             SELECT 
                 c.numero_comande,
@@ -428,6 +430,8 @@ def ventes_jour():
                 c.nature,
                 c.numero_table,
                 cl.nom AS client_nom,
+                c.numero_util,
+                u.nom AS utilisateur_nom,
                 a.numero_item,
                 a.quantite,
                 a.prixt,
@@ -435,6 +439,7 @@ def ventes_jour():
                 i.designation
             FROM comande c
             LEFT JOIN client cl ON c.numero_table = cl.numero_clt
+            LEFT JOIN utilisateur u ON c.numero_util = u.numero_util
             JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
             WHERE c.user_id = %s 
@@ -468,6 +473,7 @@ def ventes_jour():
                     'date_comande': row['date_comande'].isoformat(),
                     'nature': row['nature'],
                     'client_nom': 'Comptoir' if row['numero_table'] == 0 else row['client_nom'],
+                    'utilisateur_nom': row['utilisateur_nom'] or 'N/A',  # Nom de l'utilisateur ou 'N/A'
                     'lignes': []
                 }
 
