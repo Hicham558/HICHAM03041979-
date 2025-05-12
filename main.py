@@ -763,12 +763,14 @@ def dashboard():
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+
+# GET /liste_utilisateurs
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_util, nom, statut FROM utilisateur ORDER BY nom")
+        cur.execute("SELECT numero_util, nom, statue FROM utilisateur ORDER BY nom")
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -777,7 +779,7 @@ def liste_utilisateurs():
             {
                 'numero_util': row[0],
                 'nom': row[1],
-                'statut': row[2]
+                'statue': row[2]
             }
             for row in rows
         ]
@@ -785,25 +787,26 @@ def liste_utilisateurs():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+# POST /ajouter_utilisateur
 @app.route('/ajouter_utilisateur', methods=['POST'])
 def ajouter_utilisateur():
     data = request.get_json()
     nom = data.get('nom')
-    password = data.get('password')
-    statut = data.get('statut')
+    password2 = data.get('password2')
+    statue = data.get('statue')
 
-    if not all([nom, password, statut]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (nom, password, statut)'}), 400
+    if not all([nom, password2, statue]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, password2, statue)'}), 400
 
-    if statut not in ['admin', 'emplo']:
-        return jsonify({'erreur': 'Statut invalide (doit être "admin" ou "emplo")'}), 400
+    if statue not in ['admin', 'emplo']:
+        return jsonify({'erreur': 'Statue invalide (doit être "admin" ou "emplo")'}), 400
 
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO utilisateur (nom, password2, statut) VALUES (%s, %s, %s) RETURNING numero_util",
-            (nom, password, statut)
+            "INSERT INTO utilisateur (nom, password2, statue) VALUES (%s, %s, %s) RETURNING numero_util",
+            (nom, password2, statue)
         )
         user_id = cur.fetchone()[0]
         conn.commit()
@@ -813,6 +816,7 @@ def ajouter_utilisateur():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+# DELETE /supprimer_utilisateur/<numero_util>
 @app.route('/supprimer_utilisateur/<numero_util>', methods=['DELETE'])
 def supprimer_utilisateur(numero_util):
     try:
@@ -829,6 +833,7 @@ def supprimer_utilisateur(numero_util):
         return jsonify({'statut': 'Utilisateur supprimé'}), 200
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+
 
 # Lancer l'application
 if __name__ == '__main__':
