@@ -763,6 +763,152 @@ def dashboard():
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+# --- Utilisateurs ---
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    nom = data.get('nom')
+    password = data.get('password')
+
+    if not nom or not password:
+        return jsonify({'erreur': 'Nom et mot de passe requis'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numero_util, nom, statut, password2 FROM utilisateur WHERE nom = %s", (nom,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if not user:
+            return jsonify({'erreur': 'Utilisateur non trouvé'}), 401
+
+        # Vérifier le mot de passe (en texte clair)
+        if password != user['password2']:
+            return jsonify({'erreur': 'Mot de passe incorrect'}), 401
+
+        # Générer un user_id (par exemple, en encodant nom:password en base64)
+        user_id = f"{user['numero_util']}:{nom}"
+        role = user['statut']
+
+        return jsonify({'user_id': user_id, 'role': role}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/liste_utilisateurs', methods=['GET'])
+def liste_utilisateurs():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):  # Si validate_user_id retourne une erreur
+        return user_id
+
+    # Vérifier si l'utilisateur est admin
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT statut FROM utilisateur WHERE numero_util = %s", (user_id.split(':')[0],))
+        user = cur.fetchone()
+        if not user or user[0] != 'admin':
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Accès réservé aux administrateurs'}), 403
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+    try:
+        cur.execute("SELECT numero_util, nom, statut FROM utilisateur ORDER BY nom")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        utilisateurs = [
+            {
+                'numero_util': row[0],
+                'nom': row[1],
+                'statut': row[2]
+            }
+            for row in rows
+        ]
+        return jsonify(utilisateurs)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_utilisateur', methods=['POST'])
+def ajouter_utilisateur():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    # Vérifier si l'utilisateur est admin
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT statut FROM utilisateur WHERE numero_util = %s", (user_id.split(':')[0],))
+        user = cur.fetchone()
+        if not user or user[0] != 'admin':
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Accès réservé aux administrateurs'}), 403
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+    data = request.get_json()
+    nom = data.get('nom')
+    password = data.get('password')
+    statut = data.get('statut')
+
+    # Validation des champs obligatoires
+    if not all([nom, password, statut]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, password, statut)'}), 400
+
+    if statut not in ['admin', 'emplo']:
+        return jsonify({'erreur': 'Statut invalide (doit être "admin" ou "emplo")'}), 400
+
+    try:
+        cur.execute(
+            "INSERT INTO utilisateur (nom, password2, statut) VALUES (%s, %s, %s) RETURNING numero_util",
+            (nom, password, statut)
+        )
+        user_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Utilisateur ajouté', 'id': user_id}), 201
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/supprimer_utilisateur/<numero_util>', methods=['DELETE'])
+def supprimer_utilisateur(numero_util):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    # Vérifier si l'utilisateur est admin
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT statut FROM utilisateur WHERE numero_util = %s", (user_id.split(':')[0],))
+        user = cur.fetchone()
+        if not user or user[0] != 'admin':
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Accès réservé aux administrateurs'}), 403
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+    try:
+        cur.execute("DELETE FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Utilisateur supprimé'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
