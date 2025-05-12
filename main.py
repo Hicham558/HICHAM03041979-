@@ -245,6 +245,7 @@ def ajouter_item():
 
 
 
+
 # Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
@@ -253,16 +254,18 @@ def valider_vente():
         return user_id  # Retourne l'erreur 401 si user_id est invalide
 
     data = request.get_json()
-    if not data or 'lignes' not in data or not data['lignes']:
-        print("Erreur: Données de vente invalides ou aucune ligne fournie")
-        return jsonify({"error": "Données de vente invalides ou aucune ligne fournie"}), 400
+    if not data or 'lignes' not in data or not data['lignes'] or 'numero_util' not in data or 'password2' not in data:
+        print("Erreur: Données de vente invalides, utilisateur ou mot de passe manquant")
+        return jsonify({"error": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
     payment_mode = data.get('payment_mode', 'espece')  # Par défaut "espece"
     amount_paid = float(data.get('amount_paid', 0))  # Montant versé, 0 par défaut
     lignes = data['lignes']
-    nature = "TICKET" if numero_table == 0 else "BON DE L."  # Déterminer nature
+    numero_util = data['numero_util']
+    password2 = data['password2']
+    nature = "TICKET" if numero_table == 0 else "BON DE L."
 
     # Validation du mode de paiement et du client
     if payment_mode == 'a_terme' and numero_table == 0:
@@ -284,6 +287,20 @@ def valider_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("""
+            SELECT Password2
+            FROM utilisateur
+            WHERE numero_util = %s
+        """, (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur:
+            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            return jsonify({"error": "Utilisateur non trouvé"}), 400
+        if utilisateur['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
+
         # Récupérer le dernier compteur pour cette nature
         cur.execute("""
             SELECT COALESCE(MAX(compteur), 0) as max_compteur
@@ -293,14 +310,14 @@ def valider_vente():
         compteur = cur.fetchone()['max_compteur'] + 1
         print(f"Compteur calculé: nature={nature}, compteur={compteur}")
 
-        # Insérer la commande
+        # Insérer la commande avec numero_util
         cur.execute("""
-            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, user_id, numero_util)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_comande
-        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id))
+        """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id, numero_util))
         numero_comande = cur.fetchone()['numero_comande']
-        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}")
+        print(f"Commande insérée: numero_comande={numero_comande}, nature={nature}, connection1=-1, compteur={compteur}, numero_util={numero_util}")
 
         # Insérer les lignes et mettre à jour le stock
         for ligne in lignes:
