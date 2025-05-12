@@ -245,8 +245,6 @@ def ajouter_item():
 
 
 
-
-# Endpoint pour valider une vente
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -275,11 +273,6 @@ def valider_vente():
     if payment_mode == 'a_terme' and amount_paid < 0:
         print("Erreur: Montant versé négatif")
         return jsonify({"error": "Le montant versé ne peut pas être négatif"}), 400
-
-    total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
-    if payment_mode == 'a_terme' and amount_paid > total_sale:
-        print("Erreur: Montant versé supérieur au total de la vente")
-        return jsonify({"error": "Le montant versé ne peut pas dépasser le total de la vente"}), 400
 
     conn = None
     try:
@@ -374,7 +367,6 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
-
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
     user_id = validate_user_id()
