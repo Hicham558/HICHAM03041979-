@@ -393,24 +393,20 @@ def client_solde():
             cur.close()
             conn.close()
 
-# --- Ventes du Jour ---
-
-
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si user_id invalide
+        return user_id
 
-    # Paramètres de filtre
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
+    numero_util = request.args.get('numero_util')
 
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -422,7 +418,6 @@ def ventes_jour():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête SQL avec jointure sur utilisateur
         query = """
             SELECT 
                 c.numero_comande,
@@ -434,7 +429,7 @@ def ventes_jour():
                 u.nom AS utilisateur_nom,
                 a.numero_item,
                 a.quantite,
-                a.prixt,
+                CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) AS prixt,
                 a.remarque,
                 i.designation
             FROM comande c
@@ -455,12 +450,18 @@ def ventes_jour():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
+        if numero_util:
+            if numero_util == '0':
+                pass
+            else:
+                query += " AND c.numero_util = %s"
+                params.append(int(numero_util))
+
         query += " ORDER BY c.numero_comande DESC"
 
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Organiser les données
         tickets = []
         bons = []
         total = 0.0
@@ -473,7 +474,7 @@ def ventes_jour():
                     'date_comande': row['date_comande'].isoformat(),
                     'nature': row['nature'],
                     'client_nom': 'Comptoir' if row['numero_table'] == 0 else row['client_nom'],
-                    'utilisateur_nom': row['utilisateur_nom'] or 'N/A',  # Nom de l'utilisateur ou 'N/A'
+                    'utilisateur_nom': row['utilisateur_nom'] or 'N/A',
                     'lignes': []
                 }
 
@@ -481,11 +482,11 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),
-                'remarque': str(row['remarque'])
+                'prixt': str(row['prixt']),  # Retourne en tant que chaîne pour respecter le type d'origine
+                'remarque': row['remarque'] or ''
             })
 
-            total += float(row['prixt'] or 0)
+            total += float(row['prixt'])  # Conversion en float pour le calcul
 
         for vente in ventes_map.values():
             if vente['nature'] == 'TICKET':
@@ -514,12 +515,13 @@ def ventes_jour():
 def articles_plus_vendus():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si user_id invalide
+        return user_id
 
-    # Paramètres de filtre
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
+    numero_util = request.args.get('numero_util')
 
+    conn = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -533,25 +535,26 @@ def articles_plus_vendus():
             except ValueError:
                 return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
         else:
-            date_start = None
-            date_end = None
+            date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête SQL
+        # Construire la requête SQL
         query = """
             SELECT 
+                i.numero_item,
                 i.designation,
-                SUM(a.quantite) AS quantite
-            FROM attache a
-            JOIN comande c ON a.numero_comande = c.numero_comande
+                SUM(a.quantite) AS quantite,
+                SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)) AS total_vente
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
-            WHERE c.user_id = %s
+            WHERE c.user_id = %s 
+            AND c.date_comande >= %s 
+            AND c.date_comande <= %s
         """
-        params = [user_id]
+        params = [user_id, date_start, date_end]
 
-        if date_start and date_end:
-            query += " AND c.date_comande >= %s AND c.date_comande <= %s"
-            params.extend([date_start, date_end])
-
+        # Filtre par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -559,8 +562,13 @@ def articles_plus_vendus():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
+        # Filtre par utilisateur
+        if numero_util and numero_util != '0':
+            query += " AND c.numero_util = %s"
+            params.append(int(numero_util))
+
         query += """
-            GROUP BY i.designation
+            GROUP BY i.numero_item, i.designation
             ORDER BY quantite DESC
             LIMIT 10
         """
@@ -568,28 +576,26 @@ def articles_plus_vendus():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Formater les données
+        # Formater la réponse
         articles = [
             {
-                'designation': row['designation'],
-                'quantite': int(row['quantite'])
+                'numero_item': row['numero_item'],
+                'designation': row['designation'] or 'N/A',
+                'quantite': int(row['quantite'] or 0),
+                'total_vente': f"{float(row['total_vente'] or 0):.2f}"
             }
             for row in rows
         ]
 
-        cur.close()
-        conn.close()
-
         return jsonify(articles), 200
 
     except Exception as e:
+        print(f"Erreur récupération articles plus vendus: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        print(f"Erreur récupération articles les plus vendus: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
-
-# --- Bénéfice par date ---
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
     user_id = validate_user_id()
@@ -598,37 +604,41 @@ def profit_by_date():
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
+    numero_util = request.args.get('numero_util', '0')  # Par défaut : Tous les utilisateurs
 
+    conn = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates (7 jours, incluant la date sélectionnée)
+        # Définir la plage de dates (30 jours si aucune date spécifique)
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
                 date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
-                date_start = (date_obj - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
             except ValueError:
                 return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
         else:
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
-            date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
+            date_start = date_end - timedelta(days=30)
 
-        # Requête SQL pour calculer le bénéfice
+        # Construire la requête SQL
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
-                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS profit
-            FROM attache a
-            JOIN comande c ON a.numero_comande = c.numero_comande
+                SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) - 
+                    (a.quantite * CAST(COALESCE(NULLIF(i.prixba, ''), '0') AS FLOAT))) AS profit
+            FROM comande c
+            JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
-            WHERE c.user_id = %s
-            AND c.date_comande >= %s
+            WHERE c.user_id = %s 
+            AND c.date_comande >= %s 
             AND c.date_comande <= %s
         """
         params = [user_id, date_start, date_end]
 
+        # Filtre par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -636,64 +646,62 @@ def profit_by_date():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
+        # Filtre par utilisateur : uniquement si numero_util n'est pas '0'
+        if numero_util != '0':
+            query += " AND c.numero_util = %s"
+            params.append(int(numero_util))
+
         query += """
             GROUP BY DATE(c.date_comande)
-            ORDER BY DATE(c.date_comande) ASC
+            ORDER BY DATE(c.date_comande) DESC
         """
 
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Remplir les 7 jours, même ceux sans données
-        profits = []
-        current_date = date_start
-        while current_date <= date_end:
-            date_str = current_date.strftime('%Y-%m-%d')
-            row = next((r for r in rows if r['date'].strftime('%Y-%m-%d') == date_str), None)
-            profits.append({
-                'date': date_str,
-                'profit': float(row['profit']) if row else 0.0
-            })
-            current_date += timedelta(days=1)
-
-        cur.close()
-        conn.close()
+        # Formater la réponse
+        profits = [
+            {
+                'date': row['date'].strftime('%Y-%m-%d'),
+                'profit': f"{float(row['profit'] or 0):.2f}"
+            }
+            for row in rows
+        ]
 
         return jsonify(profits), 200
 
     except Exception as e:
+        print(f"Erreur récupération profit par date: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        print(f"Erreur récupération bénéfice par date: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
-
-
-
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
     if not isinstance(userId, str):
         return userId
 
-    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
+    period = request.args.get('period', 'day')
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
+        # Define the date range
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:  # day
+        else:
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête pour les KPI principaux
+        # Query for main KPIs
         query_kpi = """
             SELECT 
-                COALESCE(SUM(a.prixt::float), 0) AS total_ca,
-                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS total_ca,
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) - 
+                    (a.quantite * CAST(COALESCE(NULLIF(i.prixba, ''), '0') AS FLOAT))), 0) AS total_profit,
                 COUNT(DISTINCT c.numero_comande) AS sales_count
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
@@ -705,15 +713,15 @@ def dashboard():
         cur.execute(query_kpi, (userId, date_start, date_end))
         kpi_data = cur.fetchone()
 
-        # Requête pour les articles en rupture de stock
+        # Query for low stock items
         cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
         low_stock_count = cur.fetchone()['low_stock']
 
-        # Requête pour le top client
+        # Query for top client
         query_top_client = """
             SELECT 
                 cl.nom,
-                COALESCE(SUM(a.prixt::float), 0) AS client_ca
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS client_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             LEFT JOIN client cl ON c.numero_table = cl.numero_clt
@@ -727,11 +735,11 @@ def dashboard():
         cur.execute(query_top_client, (userId, date_start, date_end))
         top_client = cur.fetchone()
 
-        # Requête pour les données du graphique (CA par jour)
+        # Query for chart data (CA per day)
         query_chart = """
             SELECT 
                 DATE(c.date_comande) AS sale_date,
-                COALESCE(SUM(a.prixt::float), 0) AS daily_ca
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS daily_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             WHERE c.user_id = %s
@@ -746,7 +754,7 @@ def dashboard():
         cur.close()
         conn.close()
 
-        # Formater les données du graphique
+        # Format chart data
         chart_labels = []
         chart_values = []
         current_date = date_start
@@ -777,8 +785,6 @@ def dashboard():
             conn.close()
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-
-
 # GET /liste_utilisateurs
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
@@ -849,7 +855,47 @@ def supprimer_utilisateur(numero_util):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/valeur_stock', methods=['GET'])
+def valeur_stock():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
 
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            SELECT 
+                SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
+                SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
+            FROM item 
+            WHERE user_id = %s
+        """, (user_id,))
+        result = cur.fetchone()
+
+        # Vérifier si result est None (aucune donnée)
+        if result is None:
+            valeur_achat = 0.0
+            valeur_vente = 0.0
+        else:
+            valeur_achat = float(result['valeur_achat'] or 0)
+            valeur_vente = float(result['valeur_vente'] or 0)
+
+        zakat = valeur_vente * 0.025  # 2.5% de la valeur de vente
+
+        return jsonify({
+            'valeur_achat': f"{valeur_achat:.2f}",
+            'valeur_vente': f"{valeur_vente:.2f}",
+            'zakat': f"{zakat:.2f}"
+        }), 200
+    except Exception as e:
+        print(f"Erreur récupération valeur stock: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
