@@ -395,7 +395,6 @@ def client_solde():
 
 # --- Ventes du Jour ---
 
-
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
@@ -404,7 +403,7 @@ def ventes_jour():
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
-    numero_util = request.args.get('numero_util')  # Nouveau paramètre
+    numero_util = request.args.get('numero_util')
 
     try:
         conn = get_conn()
@@ -454,7 +453,7 @@ def ventes_jour():
                 params.append(int(numero_clt))
 
         if numero_util:
-            if numero_util == '0':  # '0' signifie tous les utilisateurs
+            if numero_util == '0':
                 pass
             else:
                 query += " AND c.numero_util = %s"
@@ -485,11 +484,11 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),
-                'remarque': str(row['remarque'])
+                'prixt': row['prixt'],  # Now a float, no need to cast
+                'remarque': row['remarque'] or ''
             })
 
-            total += float(row['prixt'] or 0)
+            total += row['prixt'] or 0  # Directly use the numeric value
 
         for vente in ventes_map.values():
             if vente['nature'] == 'TICKET':
@@ -512,7 +511,6 @@ def ventes_jour():
             conn.close()
         print(f"Erreur récupération ventes du jour: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-
 # --- Articles les plus vendus ---
 
 @app.route('/articles_plus_vendus', methods=['GET'])
@@ -864,7 +862,6 @@ def supprimer_utilisateur(numero_util):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-
 @app.route('/valeur_stock', methods=['GET'])
 def valeur_stock():
     user_id = validate_user_id()
@@ -877,7 +874,7 @@ def valeur_stock():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT 
-                SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * qte) AS valeur_achat,
+                SUM(COALESCE(prixba, 0) * qte) AS valeur_achat,
                 SUM(COALESCE(prix, 0) * qte) AS valeur_vente
             FROM item 
             WHERE user_id = %s
@@ -886,7 +883,7 @@ def valeur_stock():
 
         valeur_achat = float(result['valeur_achat'] or 0)
         valeur_vente = float(result['valeur_vente'] or 0)
-        zakat = valeur_vente * 0.025  # 2.5% de la valeur de vente
+        zakat = valeur_vente * 0.025
 
         return jsonify({
             'valeur_achat': f"{valeur_achat:.2f}",
