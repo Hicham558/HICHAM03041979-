@@ -940,7 +940,74 @@ def valider_reception():
             INSERT INTO mouvement (date_m, etat_m, numero_four, refdoc, vers, nature, connection1, numero_util, cheque, user_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_mouvement
-        """, (datetime.utcnow(), "clôt
+        """, (datetime.utcnow(), "clôture", numero_four, "", "", nature, 0, numero_util, "", user_id))
+        numero_mouvement = cur.fetchone()['numero_mouvement']
+
+        # Mettre à jour refdoc pour qu'il soit égal à numero_mouvement
+        cur.execute("UPDATE mouvement SET refdoc = %s WHERE numero_mouvement = %s", 
+                    (str(numero_mouvement), numero_mouvement))
+
+        # Calculer le coût total pour le solde du fournisseur
+        total_cost = 0.0
+        for ligne in lignes:
+            numero_item = ligne.get('numero_item')
+            qtea = float(ligne.get('qtea', 0))
+            prixbh = float(ligne.get('prixbh', 0))  # Prix d'achat
+
+            if qtea <= 0:
+                raise Exception("La quantité ajoutée doit être positive")
+
+            # Vérifier l'article
+            cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+            item = cur.fetchone()
+            if not item:
+                raise Exception(f"Article {numero_item} non trouvé")
+
+            current_qte = float(item['qte'] or 0)
+            prixba = float(item['prixba'] or 0)
+
+            # Calculer la nouvelle quantité
+            nqte = current_qte + qtea
+            total_cost += qtea * prixbh
+
+            # Insérer les détails dans ATTACHE2
+            cur.execute("""
+                INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (numero_item, numero_mouvement, qtea, nqte, str(prixbh)[:30], str(prixba)[:30], True))
+
+            # Mettre à jour le stock et le prix d'achat dans item
+            cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s", 
+                        (nqte, str(prixbh), numero_item, user_id))
+
+        # Mettre à jour le solde du fournisseur
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user_id))
+        fournisseur = cur.fetchone()
+        if not fournisseur:
+            raise Exception(f"Fournisseur {numero_four} non trouvé")
+
+        current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
+        new_solde = current_solde - total_cost  # Augmente la dette
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s", 
+                    (new_solde_str, numero_four, user_id))
+        print(f"Solde fournisseur mis à jour: numero_fou={numero_four}, total_cost={total_cost}, new_solde={new_solde_str}")
+
+        conn.commit()
+        print(f"Réception validée: numero_mouvement={numero_mouvement}, {len(lignes)} lignes")
+        return jsonify({"numero_mouvement": numero_mouvement}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur validation réception: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 
 # Lancer l'application
 if __name__ == '__main__':
