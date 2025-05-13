@@ -596,7 +596,6 @@ def articles_plus_vendus():
         if conn:
             cur.close()
             conn.close()
-
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
     user_id = validate_user_id()
@@ -639,7 +638,7 @@ def profit_by_date():
         """
         params = [user_id, date_start, date_end]
 
-        # Filtrer par client
+        # Filtre par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -647,10 +646,13 @@ def profit_by_date():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
-        # Filtrer par utilisateur
+        # Filtre par utilisateur
         if numero_util and numero_util != '0':
             query += " AND c.numero_util = %s"
             params.append(int(numero_util))
+        else:
+            # Inclure uniquement les commandes avec un numero_util non NULL
+            query += " AND c.numero_util IS NOT NULL"
 
         query += """
             GROUP BY DATE(c.date_comande)
@@ -678,7 +680,6 @@ def profit_by_date():
         if conn:
             cur.close()
             conn.close()
-
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
