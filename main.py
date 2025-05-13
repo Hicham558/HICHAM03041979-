@@ -681,30 +681,31 @@ def profit_by_date():
             conn.close()  # Note: release_conn() was used in your original code, but it's not defined. Using conn.close() instead.
 
 
+
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
     if not isinstance(userId, str):
         return userId
 
-    period = request.args.get('period', 'day')
+    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Define the date range
+        # Définir la plage de dates
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:
+        else:  # day
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Query for main KPIs
+        # Requête pour les KPI principaux
         query_kpi = """
             SELECT 
-                COALESCE(SUM(a.prixt), 0) AS total_ca,
-                COALESCE(SUM(a.prixt - (a.quantite * COALESCE(i.prixba, 0))), 0) AS total_profit,
+                COALESCE(SUM(a.prixt::float), 0) AS total_ca,
+                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
                 COUNT(DISTINCT c.numero_comande) AS sales_count
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
@@ -716,15 +717,15 @@ def dashboard():
         cur.execute(query_kpi, (userId, date_start, date_end))
         kpi_data = cur.fetchone()
 
-        # Query for low stock items
+        # Requête pour les articles en rupture de stock
         cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
         low_stock_count = cur.fetchone()['low_stock']
 
-        # Query for top client
+        # Requête pour le top client
         query_top_client = """
             SELECT 
                 cl.nom,
-                COALESCE(SUM(a.prixt), 0) AS client_ca
+                COALESCE(SUM(a.prixt::float), 0) AS client_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             LEFT JOIN client cl ON c.numero_table = cl.numero_clt
@@ -738,11 +739,11 @@ def dashboard():
         cur.execute(query_top_client, (userId, date_start, date_end))
         top_client = cur.fetchone()
 
-        # Query for chart data (CA per day)
+        # Requête pour les données du graphique (CA par jour)
         query_chart = """
             SELECT 
                 DATE(c.date_comande) AS sale_date,
-                COALESCE(SUM(a.prixt), 0) AS daily_ca
+                COALESCE(SUM(a.prixt::float), 0) AS daily_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             WHERE c.user_id = %s
@@ -757,7 +758,7 @@ def dashboard():
         cur.close()
         conn.close()
 
-        # Format chart data
+        # Formater les données du graphique
         chart_labels = []
         chart_values = []
         current_date = date_start
