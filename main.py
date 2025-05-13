@@ -613,7 +613,7 @@ def profit_by_date():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Define the date range (30 days if no specific date)
+        # Définir la plage de dates (30 jours si aucune date spécifique)
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -625,7 +625,7 @@ def profit_by_date():
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = date_end - timedelta(days=30)
 
-        # Build the SQL query
+        # Construire la requête SQL
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
@@ -640,7 +640,7 @@ def profit_by_date():
         """
         params = [user_id, date_start, date_end]
 
-        # Filter by client
+        # Filtrer par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -648,7 +648,7 @@ def profit_by_date():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
-        # Filter by user
+        # Filtrer par utilisateur
         if numero_util and numero_util != '0':
             query += " AND c.numero_util = %s"
             params.append(int(numero_util))
@@ -661,7 +661,7 @@ def profit_by_date():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Format the response
+        # Formater la réponse
         profits = [
             {
                 'date': row['date'].strftime('%Y-%m-%d'),
@@ -870,16 +870,22 @@ def valeur_stock():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT 
-                SUM(COALESCE(prixba, 0) * qte) AS valeur_achat,
-                SUM(COALESCE(prix, 0) * qte) AS valeur_vente
+                SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * CAST(COALESCE(NULLIF(qte, '') AS TEXT) AS FLOAT)) AS valeur_achat,
+                SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * CAST(COALESCE(NULLIF(qte, '') AS TEXT) AS FLOAT)) AS valeur_vente
             FROM item 
             WHERE user_id = %s
         """, (user_id,))
         result = cur.fetchone()
 
-        valeur_achat = float(result['valeur_achat'] or 0)
-        valeur_vente = float(result['valeur_vente'] or 0)
-        zakat = valeur_vente * 0.025
+        # Vérifier si result est None (aucune donnée)
+        if result is None:
+            valeur_achat = 0.0
+            valeur_vente = 0.0
+        else:
+            valeur_achat = float(result['valeur_achat'] or 0)
+            valeur_vente = float(result['valeur_vente'] or 0)
+
+        zakat = valeur_vente * 0.025  # 2.5% de la valeur de vente
 
         return jsonify({
             'valeur_achat': f"{valeur_achat:.2f}",
@@ -893,7 +899,6 @@ def valeur_stock():
         if conn:
             cur.close()
             conn.close()
-
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
