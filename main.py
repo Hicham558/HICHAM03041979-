@@ -896,6 +896,123 @@ def valeur_stock():
         if conn:
             cur.close()
             conn.close()
+
+@app.route('/valider_reception', methods=['POST'])
+def valider_reception():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    data = request.get_json()
+    if not data or 'lignes' not in data or not data['lignes'] or 'numero_four' not in data or 'numero_util' not in data or 'password2' not in data:
+        print("Erreur: Données de réception invalides")
+        return jsonify({"error": "Données de réception invalides, fournisseur, utilisateur ou mot de passe manquant"}), 400
+
+    numero_four = data.get('numero_four')
+    numero_util = data.get('numero_util')
+    password2 = data.get('password2')
+    lignes = data['lignes']
+    nature = "Bon de réception"
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur:
+            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            return jsonify({"error": "Utilisateur non trouvé"}), 400
+        if utilisateur['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
+
+        # Vérifier le fournisseur
+        cur.execute("SELECT numero_fou FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user_id))
+        if not cur.fetchone():
+            print(f"Erreur: Fournisseur {numero_four} non trouvé")
+            return jsonify({"error": "Fournisseur non trouvé"}), 400
+
+        # Insérer le mouvement
+        cur.execute("""
+            INSERT INTO mouvement (nature, connection1, numero_util, etat_m, numero_four, user_id, date_mouvement, send)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING numero_mouvement
+        """, (nature, 0, numero_util, "clôture", numero_four, user_id, datetime.utcnow(), True))
+        numero_mouvement = cur.fetchone()['numero_mouvement']
+
+        # Mettre à jour refdoc avec numero_mouvement
+        cur.execute("UPDATE mouvement SET refdoc = %s WHERE numero_mouvement = %s", (numero_mouvement, numero_mouvement))
+
+        # Traiter chaque ligne (article)
+        total_cost = 0.0
+        for ligne in lignes:
+            numero_item = ligne.get('numero_item')
+            qtea = float(ligne.get('qtea', 0))
+            prixbh = float(ligne.get('prixbh', 0))  # Prix d'achat
+
+            if qtea <= 0:
+                raise Exception("La quantité ajoutée doit être positive")
+
+            # Vérifier l'article
+            cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+            item = cur.fetchone()
+            if not item:
+                raise Exception(f"Article {numero_item} non trouvé")
+
+            current_qte = float(item['qte'] or 0)
+            prixba = float(item['prixba'] or 0)
+
+            # Calculer la nouvelle quantité
+            nqte = current_qte + qtea
+            total_cost += qtea * prixbh
+
+            # Insérer les détails dans mouvement
+            cur.execute("""
+                INSERT INTO mouvement (
+                    numero_mouvement, refdoc, nature, connection1, numero_util, etat_m, 
+                    qtea, nqte, pump, nprix, send, numero_four, numero_item, user_id, date_mouvement
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (numero_mouvement, numero_mouvement, nature, 0, numero_util, "clôture", 
+                  qtea, nqte, prixba, prixba, True, numero_four, numero_item, user_id, datetime.utcnow()))
+
+            # Mettre à jour le stock et le prix d'achat dans item
+            cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s", 
+                        (nqte, str(prixbh), numero_item, user_id))
+
+        # Mettre à jour le solde du fournisseur
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user_id))
+        fournisseur = cur.fetchone()
+        if not fournisseur:
+            raise Exception(f"Fournisseur {numero_four} non trouvé")
+
+        current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
+        new_solde = current_solde - total_cost  # Soustraire le coût total (augmente la dette)
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s", 
+                    (new_solde_str, numero_four, user_id))
+        print(f"Solde fournisseur mis à jour: numero_fou={numero_four}, total_cost={total_cost}, new_solde={new_solde_str}")
+
+        conn.commit()
+        print(f"Réception validée: numero_mouvement={numero_mouvement}, {len(lignes)} lignes")
+        return jsonify({"numero_mouvement": numero_mouvement}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur validation réception: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
