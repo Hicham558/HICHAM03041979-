@@ -680,31 +680,31 @@ def profit_by_date():
             cur.close()
             conn.close()
 
-
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
     if not isinstance(userId, str):
         return userId
 
-    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
+    period = request.args.get('period', 'day')
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
+        # Define the date range
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:  # day
+        else:
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête pour les KPI principaux
+        # Query for main KPIs
         query_kpi = """
             SELECT 
-                COALESCE(SUM(a.prixt::float), 0) AS total_ca,
-                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS total_ca,
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) - 
+                    (a.quantite * CAST(COALESCE(NULLIF(i.prixba, ''), '0') AS FLOAT))), 0) AS total_profit,
                 COUNT(DISTINCT c.numero_comande) AS sales_count
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
@@ -716,15 +716,15 @@ def dashboard():
         cur.execute(query_kpi, (userId, date_start, date_end))
         kpi_data = cur.fetchone()
 
-        # Requête pour les articles en rupture de stock
+        # Query for low stock items
         cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
         low_stock_count = cur.fetchone()['low_stock']
 
-        # Requête pour le top client
+        # Query for top client
         query_top_client = """
             SELECT 
                 cl.nom,
-                COALESCE(SUM(a.prixt::float), 0) AS client_ca
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS client_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             LEFT JOIN client cl ON c.numero_table = cl.numero_clt
@@ -738,11 +738,11 @@ def dashboard():
         cur.execute(query_top_client, (userId, date_start, date_end))
         top_client = cur.fetchone()
 
-        # Requête pour les données du graphique (CA par jour)
+        # Query for chart data (CA per day)
         query_chart = """
             SELECT 
                 DATE(c.date_comande) AS sale_date,
-                COALESCE(SUM(a.prixt::float), 0) AS daily_ca
+                COALESCE(SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)), 0) AS daily_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             WHERE c.user_id = %s
@@ -757,7 +757,7 @@ def dashboard():
         cur.close()
         conn.close()
 
-        # Formater les données du graphique
+        # Format chart data
         chart_labels = []
         chart_values = []
         current_date = date_start
@@ -788,8 +788,6 @@ def dashboard():
             conn.close()
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-
-
 # GET /liste_utilisateurs
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
