@@ -393,8 +393,6 @@ def client_solde():
             cur.close()
             conn.close()
 
-# --- Ventes du Jour ---
-
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
@@ -431,7 +429,7 @@ def ventes_jour():
                 u.nom AS utilisateur_nom,
                 a.numero_item,
                 a.quantite,
-                a.prixt,
+                CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) AS prixt,
                 a.remarque,
                 i.designation
             FROM comande c
@@ -484,11 +482,11 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': row['prixt'],  # Now a float, no need to cast
+                'prixt': str(row['prixt']),  # Return as string since original type is VARCHAR
                 'remarque': row['remarque'] or ''
             })
 
-            total += row['prixt'] or 0  # Directly use the numeric value
+            total += float(row['prixt'])  # Safely convert to float for summation
 
         for vente in ventes_map.values():
             if vente['nature'] == 'TICKET':
@@ -511,6 +509,7 @@ def ventes_jour():
             conn.close()
         print(f"Erreur récupération ventes du jour: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
 # --- Articles les plus vendus ---
 
 @app.route('/articles_plus_vendus', methods=['GET'])
@@ -630,7 +629,8 @@ def profit_by_date():
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
-                SUM(a.prixt - (a.quantite * COALESCE(i.prixba, 0))) AS profit
+                SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT) - 
+                    (a.quantite * CAST(COALESCE(NULLIF(i.prixba, ''), '0') AS FLOAT))) AS profit
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
@@ -678,8 +678,7 @@ def profit_by_date():
     finally:
         if conn:
             cur.close()
-            conn.close()  # Note: release_conn() was used in your original code, but it's not defined. Using conn.close() instead.
-
+            conn.close()
 
 
 @app.route('/dashboard', methods=['GET'])
