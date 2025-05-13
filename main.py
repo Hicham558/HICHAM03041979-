@@ -936,18 +936,15 @@ def valider_reception():
             print(f"Erreur: Fournisseur {numero_four} non trouvé")
             return jsonify({"error": "Fournisseur non trouvé"}), 400
 
-        # Insérer le mouvement
+        # Insérer le mouvement principal
         cur.execute("""
-            INSERT INTO mouvement (nature, connection1, numero_util, etat_m, numero_four, user_id, date_mouvement, send)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO mouvement (date_m, etat_m, numero_four, refdoc, vers, nature, connection1, numero_util, cheque, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_mouvement
-        """, (nature, 0, numero_util, "clôture", numero_four, user_id, datetime.utcnow(), True))
+        """, (datetime.utcnow(), "clôture", numero_four, str(uuid.uuid4())[:30], "", nature, 0, numero_util, "", user_id))
         numero_mouvement = cur.fetchone()['numero_mouvement']
 
-        # Mettre à jour refdoc avec numero_mouvement
-        cur.execute("UPDATE mouvement SET refdoc = %s WHERE numero_mouvement = %s", (numero_mouvement, numero_mouvement))
-
-        # Traiter chaque ligne (article)
+        # Calculer le coût total pour le solde du fournisseur
         total_cost = 0.0
         for ligne in lignes:
             numero_item = ligne.get('numero_item')
@@ -970,15 +967,11 @@ def valider_reception():
             nqte = current_qte + qtea
             total_cost += qtea * prixbh
 
-            # Insérer les détails dans mouvement
+            # Insérer les détails dans ATTACHE2
             cur.execute("""
-                INSERT INTO mouvement (
-                    numero_mouvement, refdoc, nature, connection1, numero_util, etat_m, 
-                    qtea, nqte, pump, nprix, send, numero_four, numero_item, user_id, date_mouvement
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (numero_mouvement, numero_mouvement, nature, 0, numero_util, "clôture", 
-                  qtea, nqte, prixba, prixba, True, numero_four, numero_item, user_id, datetime.utcnow()))
+                INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (numero_item, numero_mouvement, qtea, nqte, str(prixbh)[:30], str(prixba)[:30], True))
 
             # Mettre à jour le stock et le prix d'achat dans item
             cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s", 
@@ -991,7 +984,7 @@ def valider_reception():
             raise Exception(f"Fournisseur {numero_four} non trouvé")
 
         current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
-        new_solde = current_solde - total_cost  # Soustraire le coût total (augmente la dette)
+        new_solde = current_solde - total_cost  # Augmente la dette
         new_solde_str = f"{new_solde:.2f}"
 
         cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s", 
