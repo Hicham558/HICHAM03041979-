@@ -604,7 +604,7 @@ def profit_by_date():
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
-    numero_util = request.args.get('numero_util')
+    numero_util = request.args.get('numero_util', '0')  # Par défaut : Tous les utilisateurs
 
     conn = None
     try:
@@ -646,13 +646,10 @@ def profit_by_date():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
-        # Filtre par utilisateur
-        if numero_util and numero_util != '0':
+        # Filtre par utilisateur : uniquement si numero_util n'est pas '0'
+        if numero_util != '0':
             query += " AND c.numero_util = %s"
             params.append(int(numero_util))
-        else:
-            # Inclure uniquement les commandes avec un numero_util non NULL
-            query += " AND c.numero_util IS NOT NULL"
 
         query += """
             GROUP BY DATE(c.date_comande)
