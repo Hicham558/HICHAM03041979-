@@ -870,8 +870,8 @@ def valeur_stock():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("""
             SELECT 
-                SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * CAST(COALESCE(NULLIF(qte, '') AS TEXT) AS FLOAT)) AS valeur_achat,
-                SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * CAST(COALESCE(NULLIF(qte, '') AS TEXT) AS FLOAT)) AS valeur_vente
+                SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
+                SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
             FROM item 
             WHERE user_id = %s
         """, (user_id,))
