@@ -511,7 +511,6 @@ def ventes_jour():
         return jsonify({'erreur': str(e)}), 500
 
 # --- Articles les plus vendus ---
-
 @app.route('/articles_plus_vendus', methods=['GET'])
 def articles_plus_vendus():
     user_id = validate_user_id()
@@ -520,7 +519,7 @@ def articles_plus_vendus():
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
-    numero_util = request.args.get('numero_util')  # Nouveau paramètre
+    numero_util = request.args.get('numero_util')
 
     conn = None
     try:
@@ -545,7 +544,7 @@ def articles_plus_vendus():
                 i.numero_item,
                 i.designation,
                 SUM(a.quantite) AS quantite,
-                SUM(a.prixt) AS total_vente
+                SUM(CAST(COALESCE(NULLIF(a.prixt, ''), '0') AS FLOAT)) AS total_vente
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
@@ -596,7 +595,7 @@ def articles_plus_vendus():
     finally:
         if conn:
             cur.close()
-            release_conn(conn)
+            conn.close()
 
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
