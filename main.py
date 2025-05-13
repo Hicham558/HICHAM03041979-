@@ -482,11 +482,11 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),  # Return as string since original type is VARCHAR
+                'prixt': str(row['prixt']),  # Retourne en tant que chaîne pour respecter le type d'origine
                 'remarque': row['remarque'] or ''
             })
 
-            total += float(row['prixt'])  # Safely convert to float for summation
+            total += float(row['prixt'])  # Conversion en float pour le calcul
 
         for vente in ventes_map.values():
             if vente['nature'] == 'TICKET':
