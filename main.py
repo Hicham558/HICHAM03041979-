@@ -599,7 +599,6 @@ def articles_plus_vendus():
             cur.close()
             release_conn(conn)
 
-
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
     user_id = validate_user_id()
@@ -608,14 +607,14 @@ def profit_by_date():
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
-    numero_util = request.args.get('numero_util')  # Nouveau paramètre
+    numero_util = request.args.get('numero_util')
 
     conn = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates (par exemple, 30 derniers jours si aucune date spécifique)
+        # Define the date range (30 days if no specific date)
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -625,13 +624,13 @@ def profit_by_date():
                 return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
         else:
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
-            date_start = date_end - timedelta(days=30)  # 30 jours précédents
+            date_start = date_end - timedelta(days=30)
 
-        # Construire la requête SQL
+        # Build the SQL query
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
-                SUM(a.prixt - (a.quantite * COALESCE(CAST(NULLIF(i.prixba, '') AS FLOAT), 0))) AS profit
+                SUM(a.prixt - (a.quantite * COALESCE(i.prixba, 0))) AS profit
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             JOIN item i ON a.numero_item = i.numero_item
@@ -641,7 +640,7 @@ def profit_by_date():
         """
         params = [user_id, date_start, date_end]
 
-        # Filtre par client
+        # Filter by client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
@@ -649,7 +648,7 @@ def profit_by_date():
                 query += " AND c.numero_table = %s"
                 params.append(int(numero_clt))
 
-        # Filtre par utilisateur
+        # Filter by user
         if numero_util and numero_util != '0':
             query += " AND c.numero_util = %s"
             params.append(int(numero_util))
@@ -662,7 +661,7 @@ def profit_by_date():
         cur.execute(query, params)
         rows = cur.fetchall()
 
-        # Formater la réponse
+        # Format the response
         profits = [
             {
                 'date': row['date'].strftime('%Y-%m-%d'),
@@ -679,8 +678,7 @@ def profit_by_date():
     finally:
         if conn:
             cur.close()
-            release_conn(conn)
-
+            conn.close()  # Note: release_conn() was used in your original code, but it's not defined. Using conn.close() instead.
 
 
 @app.route('/dashboard', methods=['GET'])
@@ -689,24 +687,24 @@ def dashboard():
     if not isinstance(userId, str):
         return userId
 
-    period = request.args.get('period', 'day')  # Par défaut : aujourd'hui
+    period = request.args.get('period', 'day')
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
+        # Define the date range
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
-        else:  # day
+        else:
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Requête pour les KPI principaux
+        # Query for main KPIs
         query_kpi = """
             SELECT 
-                COALESCE(SUM(a.prixt::float), 0) AS total_ca,
-                COALESCE(SUM(a.prixt::float - (a.quantite * COALESCE(NULLIF(i.prixba, '')::float, 0))), 0) AS total_profit,
+                COALESCE(SUM(a.prixt), 0) AS total_ca,
+                COALESCE(SUM(a.prixt - (a.quantite * COALESCE(i.prixba, 0))), 0) AS total_profit,
                 COUNT(DISTINCT c.numero_comande) AS sales_count
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
@@ -718,15 +716,15 @@ def dashboard():
         cur.execute(query_kpi, (userId, date_start, date_end))
         kpi_data = cur.fetchone()
 
-        # Requête pour les articles en rupture de stock
+        # Query for low stock items
         cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
         low_stock_count = cur.fetchone()['low_stock']
 
-        # Requête pour le top client
+        # Query for top client
         query_top_client = """
             SELECT 
                 cl.nom,
-                COALESCE(SUM(a.prixt::float), 0) AS client_ca
+                COALESCE(SUM(a.prixt), 0) AS client_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             LEFT JOIN client cl ON c.numero_table = cl.numero_clt
@@ -740,11 +738,11 @@ def dashboard():
         cur.execute(query_top_client, (userId, date_start, date_end))
         top_client = cur.fetchone()
 
-        # Requête pour les données du graphique (CA par jour)
+        # Query for chart data (CA per day)
         query_chart = """
             SELECT 
                 DATE(c.date_comande) AS sale_date,
-                COALESCE(SUM(a.prixt::float), 0) AS daily_ca
+                COALESCE(SUM(a.prixt), 0) AS daily_ca
             FROM comande c
             JOIN attache a ON c.numero_comande = a.numero_comande
             WHERE c.user_id = %s
@@ -759,7 +757,7 @@ def dashboard():
         cur.close()
         conn.close()
 
-        # Formater les données du graphique
+        # Format chart data
         chart_labels = []
         chart_values = []
         current_date = date_start
