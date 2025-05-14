@@ -1114,6 +1114,8 @@ def receptions_jour():
         print(f"Erreur récupération réceptions: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 # --- Ajouter un versement ---
+# ... (imports et configuration : Flask, CORS, psycopg2, etc.)
+
 @app.route('/ajouter_versement', methods=['POST'])
 def ajouter_versement():
     user_id = validate_user_id()
@@ -1161,7 +1163,7 @@ def ajouter_versement():
             return jsonify({'erreur': f"{'Client' if type_versement == 'C' else 'Fournisseur'} non trouvé"}), 404
 
         # Insérer le versement dans MOUVEMENTC
-        origine = f"VERSEMENT {type_versement}"
+        origine = f"VERSEMENT {type_versement}"  # "VERSEMENT C" ou "VERSEMENT F"
         cur.execute(
             """
             INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf, user_id)
@@ -1184,9 +1186,9 @@ def ajouter_versement():
 
         # Mettre à jour le solde
         current_solde = float(cf['solde'] or 0)
-        new_solde = current_solde + montant
+        new_solde = current_solde + montant if type_versement == 'C' else current_solde - montant
         new_solde_str = f"{new_solde:.2f}"
-        
+
         if type_versement == 'C':
             cur.execute("UPDATE client SET solde = %s WHERE numero_clt = %s AND user_id = %s", (new_solde_str, numero_cf, user_id))
         else:
@@ -1205,7 +1207,95 @@ def ajouter_versement():
         if conn:
             cur.close()
             conn.close()
+@app.route('/process_purchase', methods=['POST'])
+def process_purchase():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
 
+    data = request.get_json()
+    if not data or 'numero_fou' not in data or 'total_cost' not in data:
+        return jsonify({'erreur': 'Champs obligatoires manquants (numero_fou, total_cost)'}), 400
+
+    numero_fou = data.get('numero_fou')  # ID du fournisseur
+    total_cost = data.get('total_cost')  # Montant à déduire
+    justificatif = data.get('justificatif', 'Achat fournisseur')  # Description
+    numero_util = data.get('numero_util', None)  # Utilisateur (optionnel)
+
+    # Validation des champs
+    try:
+        total_cost = float(total_cost)
+        if total_cost <= 0:
+            return jsonify({'erreur': 'Le coût total doit être positif'}), 400
+    except ValueError:
+        return jsonify({'erreur': 'Le coût total doit être un nombre valide'}), 400
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier le fournisseur
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_fou, user_id))
+        fournisseur = cur.fetchone()
+        if not fournisseur:
+            return jsonify({'erreur': f"Fournisseur {numero_fou} non trouvé"}), 404
+
+        # Mettre à jour le solde
+        current_solde = float(fournisseur['solde'] or 0.0)
+        new_solde = current_solde - total_cost
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute(
+            "UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s",
+            (new_solde_str, numero_fou, user_id)
+        )
+
+        # Enregistrer dans MOUVEMENTC si numero_util est fourni
+        numero_mc = None
+        if numero_util:
+            cur.execute("SELECT numero_util FROM utilisateur WHERE numero_util = %s", (numero_util,))
+            if not cur.fetchone():
+                return jsonify({'erreur': f"Utilisateur {numero_util} non trouvé"}), 404
+            cur.execute(
+                """
+                INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING numero_mc
+                """,
+                (
+                    datetime.utcnow(),
+                    datetime.utcnow(),
+                    str(-total_cost)[:30],  # Montant négatif
+                    justificatif[:255],
+                    numero_util,
+                    "VERSEMENT F",
+                    "F",
+                    numero_fou,
+                    user_id
+                )
+            )
+            numero_mc = cur.fetchone()['numero_mc']
+
+        conn.commit()
+        return jsonify({
+            'statut': 'Achat traité avec succès',
+            'numero_mc': numero_mc,
+            'nouveau_solde': new_solde_str
+        }), 201
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur traitement achat: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+          
 # --- Historique des versements ---
 @app.route('/historique_versements', methods=['GET'])
 def historique_versements():
