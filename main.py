@@ -1125,7 +1125,7 @@ def ajouter_versement():
         return jsonify({'erreur': 'Champs obligatoires manquants (type, numero_cf, montant, numero_util)'}), 400
 
     type_versement = data.get('type')  # 'C' pour client, 'F' pour fournisseur
-    numero_cf = data.get('numero_cf')  # ID du client ou fournisseur
+    numero_cf = data.get('numero_cf')  # numero_clt ou numero_fou
     montant = data.get('montant')  # Montant du versement (positif ou négatif)
     justificatif = data.get('justificatif', '')  # Description du versement
     numero_util = data.get('numero_util')  # ID de l'utilisateur
@@ -1215,7 +1215,7 @@ def historique_versements():
 
     selected_date = request.args.get('date')
     type_versement = request.args.get('type')  # 'C', 'F', ou vide pour tous
-    numero_cf = request.args.get('numero_cf')  # ID client ou fournisseur
+    numero_cf = request.args.get('numero_cf')  # numero_clt ou numero_fou
     page = int(request.args.get('page', 1))
     per_page = int(request.args.get('per_page', 10))
 
@@ -1248,7 +1248,11 @@ def historique_versements():
                 m.origine,
                 m.cf,
                 m.numero_cf,
-                COALESCE(c.nom, f.nom) AS nom_cf
+                CASE 
+                    WHEN m.cf = 'C' THEN c.nom 
+                    WHEN m.cf = 'F' THEN f.nom 
+                    ELSE 'N/A' 
+                END AS nom
             FROM MOUVEMENTC m
             LEFT JOIN utilisateur u ON m.numero_util = u.numero_util
             LEFT JOIN client c ON m.cf = 'C' AND m.numero_cf = c.numero_clt
@@ -1307,7 +1311,7 @@ def historique_versements():
                 'origine': row['origine'],
                 'cf': row['cf'],
                 'numero_cf': row['numero_cf'],
-                'nom_cf': row['nom_cf'] or 'N/A'
+                'nom': row['nom'] or 'N/A'
             }
             for row in rows
         ]
