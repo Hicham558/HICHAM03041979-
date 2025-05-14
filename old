@@ -1015,6 +1015,7 @@ def receptions_jour():
 
     selected_date = request.args.get('date')
     numero_util = request.args.get('numero_util')
+    numero_four = request.args.get('numero_four', '')
 
     try:
         conn = get_conn()
@@ -1059,6 +1060,9 @@ def receptions_jour():
         if numero_util and numero_util != '0':
             query += " AND m.numero_util = %s"
             params.append(int(numero_util))
+        if numero_four and numero_four != '':
+            query += " AND m.numero_four = %s"
+            params.append(numero_four)
 
         query += " ORDER BY m.numero_mouvement DESC"
 
