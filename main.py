@@ -855,7 +855,7 @@ def supprimer_utilisateur(numero_util):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-@app.route('/valeur_stock', methods=['GET'])
+@app.route('/stock_value', methods=['GET'])
 def valeur_stock():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
