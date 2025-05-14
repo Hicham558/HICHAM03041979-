@@ -1058,7 +1058,7 @@ def receptions_jour():
             query += " AND m.numero_util = %s"
             params.append(numero_util)
         if numero_four and numero_four != '':
-            query += " AND m.numero_fou = %s"
+            query += " AND m.numero_four = %s"
             params.append(numero_four)
 
         query += " ORDER BY m.date_m DESC"
