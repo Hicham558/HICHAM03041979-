@@ -1113,8 +1113,7 @@ def receptions_jour():
             conn.close()
         print(f"Erreur récupération réceptions: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-
-# --- Versements ---
+# --- Ajouter un versement ---
 @app.route('/ajouter_versement', methods=['POST'])
 def ajouter_versement():
     user_id = validate_user_id()
@@ -1122,15 +1121,14 @@ def ajouter_versement():
         return user_id
 
     data = request.get_json()
-    if not data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data or 'password2' not in data:
-        return jsonify({'erreur': 'Champs obligatoires manquants (type, numero_cf, montant, numero_util, password2)'}), 400
+    if not data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data:
+        return jsonify({'erreur': 'Champs obligatoires manquants (type, numero_cf, montant, numero_util)'}), 400
 
     type_versement = data.get('type')  # 'C' pour client, 'F' pour fournisseur
     numero_cf = data.get('numero_cf')  # ID du client ou fournisseur
     montant = data.get('montant')  # Montant du versement (positif ou négatif)
     justificatif = data.get('justificatif', '')  # Description du versement
     numero_util = data.get('numero_util')  # ID de l'utilisateur
-    password2 = data.get('password2')  # Mot de passe de l'utilisateur
 
     # Validation des champs
     if type_versement not in ['C', 'F']:
@@ -1148,13 +1146,10 @@ def ajouter_versement():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
-        cur.execute("SELECT password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
-        utilisateur = cur.fetchone()
-        if not utilisateur:
+        # Vérifier l'utilisateur
+        cur.execute("SELECT numero_util FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        if not cur.fetchone():
             return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
-        if utilisateur['password2'] != password2:
-            return jsonify({'erreur': 'Mot de passe incorrect'}), 401
 
         # Vérifier le client ou fournisseur
         if type_versement == 'C':
@@ -1166,6 +1161,7 @@ def ajouter_versement():
             return jsonify({'erreur': f"{'Client' if type_versement == 'C' else 'Fournisseur'} non trouvé"}), 404
 
         # Insérer le versement dans MOUVEMENTC
+        origine = f"VERSEMENT {type_versement}"
         cur.execute(
             """
             INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf, user_id)
@@ -1178,7 +1174,7 @@ def ajouter_versement():
                 str(montant)[:30],  # Truncate to fit char(30)
                 justificatif[:255],  # Truncate to fit char(255)
                 numero_util,
-                f"VERSEMENT {type_versement}",
+                origine,
                 type_versement,
                 numero_cf,
                 user_id
@@ -1210,6 +1206,7 @@ def ajouter_versement():
             cur.close()
             conn.close()
 
+# --- Historique des versements ---
 @app.route('/historique_versements', methods=['GET'])
 def historique_versements():
     user_id = validate_user_id()
