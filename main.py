@@ -3,7 +3,7 @@ from flask_cors import CORS
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
@@ -243,8 +243,7 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-
-
+# --- Ventes ---
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -280,15 +279,15 @@ def valider_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
+        # Vérifier l'utilisateur et le mot de passe (avec user_id)
         cur.execute("""
             SELECT Password2
             FROM utilisateur
-            WHERE numero_util = %s
-        """, (numero_util,))
+            WHERE numero_util = %s AND user_id = %s
+        """, (numero_util, user_id))
         utilisateur = cur.fetchone()
         if not utilisateur:
-            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            print(f"Erreur: Utilisateur {numero_util} non trouvé pour user_id {user_id}")
             return jsonify({"error": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
             print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
@@ -367,6 +366,8 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
+
+# --- Soldes clients ---
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
     user_id = validate_user_id()
@@ -393,6 +394,7 @@ def client_solde():
             cur.close()
             conn.close()
 
+# --- Ventes du jour ---
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
     user_id = validate_user_id()
@@ -596,6 +598,8 @@ def articles_plus_vendus():
         if conn:
             cur.close()
             conn.close()
+
+# --- Profit par date ---
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
     user_id = validate_user_id()
@@ -677,11 +681,13 @@ def profit_by_date():
         if conn:
             cur.close()
             conn.close()
+
+# --- Dashboard ---
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
-    userId = validate_user_id()
-    if not isinstance(userId, str):
-        return userId
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
 
     period = request.args.get('period', 'day')
     try:
@@ -710,11 +716,11 @@ def dashboard():
             AND c.date_comande >= %s
             AND c.date_comande <= %s
         """
-        cur.execute(query_kpi, (userId, date_start, date_end))
+        cur.execute(query_kpi, (user_id, date_start, date_end))
         kpi_data = cur.fetchone()
 
         # Query for low stock items
-        cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (userId,))
+        cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE user_id = %s AND qte < 10", (user_id,))
         low_stock_count = cur.fetchone()['low_stock']
 
         # Query for top client
@@ -732,7 +738,7 @@ def dashboard():
             ORDER BY client_ca DESC
             LIMIT 1
         """
-        cur.execute(query_top_client, (userId, date_start, date_end))
+        cur.execute(query_top_client, (user_id, date_start, date_end))
         top_client = cur.fetchone()
 
         # Query for chart data (CA per day)
@@ -748,7 +754,7 @@ def dashboard():
             GROUP BY DATE(c.date_comande)
             ORDER BY sale_date
         """
-        cur.execute(query_chart, (userId, date_start, date_end))
+        cur.execute(query_chart, (user_id, date_start, date_end))
         chart_data = cur.fetchall()
 
         cur.close()
@@ -785,13 +791,18 @@ def dashboard():
             conn.close()
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-# GET /liste_utilisateurs
+
+# --- Utilisateurs ---
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_util, nom, statue FROM utilisateur ORDER BY nom")
+        cur.execute("SELECT numero_util, nom, statue FROM utilisateur WHERE user_id = %s ORDER BY nom", (user_id,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -808,9 +819,12 @@ def liste_utilisateurs():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# POST /ajouter_utilisateur
 @app.route('/ajouter_utilisateur', methods=['POST'])
 def ajouter_utilisateur():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
     data = request.get_json()
     nom = data.get('nom')
     password2 = data.get('password2')
@@ -826,28 +840,31 @@ def ajouter_utilisateur():
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO utilisateur (nom, password2, statue) VALUES (%s, %s, %s) RETURNING numero_util",
-            (nom, password2, statue)
+            "INSERT INTO utilisateur (nom, password2, statue, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
+            (nom, password2, statue, user_id)
         )
-        user_id = cur.fetchone()[0]
+        user_id_inserted = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Utilisateur ajouté', 'id': user_id}), 201
+        return jsonify({'statut': 'Utilisateur ajouté', 'id': user_id_inserted}), 201
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# DELETE /supprimer_utilisateur/<numero_util>
 @app.route('/supprimer_utilisateur/<numero_util>', methods=['DELETE'])
 def supprimer_utilisateur(numero_util):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("DELETE FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        cur.execute("DELETE FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         if cur.rowcount == 0:
             cur.close()
             conn.close()
-            return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
+            return jsonify({'erreur': 'Utilisateur non trouvé ou non autorisé'}), 404
         conn.commit()
         cur.close()
         conn.close()
@@ -855,6 +872,7 @@ def supprimer_utilisateur(numero_util):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+# --- Valeur du stock ---
 @app.route('/valeur_stock', methods=['GET'])
 def valeur_stock():
     user_id = validate_user_id()
@@ -896,6 +914,8 @@ def valeur_stock():
         if conn:
             cur.close()
             conn.close()
+
+# --- Réception ---
 @app.route('/valider_reception', methods=['POST'])
 def valider_reception():
     user_id = validate_user_id()
@@ -919,11 +939,11 @@ def valider_reception():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
-        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        # Vérifier l'utilisateur et le mot de passe (avec user_id)
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         utilisateur = cur.fetchone()
         if not utilisateur:
-            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            print(f"Erreur: Utilisateur {numero_util} non trouvé pour user_id {user_id}")
             return jsonify({"error": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
             print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
