@@ -1045,7 +1045,7 @@ def receptions_jour():
                     WHERE ml.numero_mouvement = m.numero_mouvement
                 ), '[]'::json) AS lignes
             FROM mouvement m
-            LEFT JOIN fournisseur f ON m.numero_fou = f.numero_fou
+            LEFT JOIN fournisseur f ON m.numero_four = f.numero_fou
             LEFT JOIN utilisateur u ON m.numero_util = u.numero_util
             WHERE m.user_id = %s
         """
