@@ -983,7 +983,7 @@ def valider_reception():
                         (nqte, str(prixbh), numero_item, user_id))
 
         # Mettre à jour le solde du fournisseur
-        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user Principale
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user Principale))
         if not fournisseur:
             raise Exception(f"Fournisseur {numero_four} non trouvé")
 
