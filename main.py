@@ -3,7 +3,7 @@ from flask_cors import CORS
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io"])  # Autoriser les requêtes depuis ton front-end
@@ -243,8 +243,6 @@ def ajouter_item():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-
-
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
@@ -367,6 +365,7 @@ def valider_vente():
         if conn:
             cur.close()
             conn.close()
+
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
     user_id = validate_user_id()
@@ -596,6 +595,7 @@ def articles_plus_vendus():
         if conn:
             cur.close()
             conn.close()
+
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
     user_id = validate_user_id()
@@ -677,6 +677,7 @@ def profit_by_date():
         if conn:
             cur.close()
             conn.close()
+
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     userId = validate_user_id()
@@ -785,6 +786,7 @@ def dashboard():
             conn.close()
         print(f"Erreur récupération KPI: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
 # GET /liste_utilisateurs
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
@@ -886,7 +888,7 @@ def valeur_stock():
 
         return jsonify({
             'valeur_achat': f"{valeur_achat:.2f}",
-            'valeur_vente': f"{valeur_vente:.2f}",
+            ' vendedor_vente': f"{valeur_vente:.2f}",
             'zakat': f"{zakat:.2f}"
         }), 200
     except Exception as e:
@@ -896,6 +898,7 @@ def valeur_stock():
         if conn:
             cur.close()
             conn.close()
+
 @app.route('/valider_reception', methods=['POST'])
 def valider_reception():
     user_id = validate_user_id()
@@ -980,8 +983,7 @@ def valider_reception():
                         (nqte, str(prixbh), numero_item, user_id))
 
         # Mettre à jour le solde du fournisseur
-        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user_id))
-        fournisseur = cur.fetchone()
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user Principale
         if not fournisseur:
             raise Exception(f"Fournisseur {numero_four} non trouvé")
 
@@ -1007,6 +1009,7 @@ def valider_reception():
         if conn:
             cur.close()
             conn.close()
+
 @app.route('/receptions_jour', methods=['GET'])
 def receptions_jour():
     user_id = validate_user_id()
@@ -1110,6 +1113,226 @@ def receptions_jour():
             conn.close()
         print(f"Erreur récupération réceptions: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
+# --- Versements ---
+@app.route('/ajouter_versement', methods=['POST'])
+def ajouter_versement():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    data = request.get_json()
+    if not data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data or 'password2' not in data:
+        return jsonify({'erreur': 'Champs obligatoires manquants (type, numero_cf, montant, numero_util, password2)'}), 400
+
+    type_versement = data.get('type')  # 'C' pour client, 'F' pour fournisseur
+    numero_cf = data.get('numero_cf')  # ID du client ou fournisseur
+    montant = data.get('montant')  # Montant du versement (positif ou négatif)
+    justificatif = data.get('justificatif', '')  # Description du versement
+    numero_util = data.get('numero_util')  # ID de l'utilisateur
+    password2 = data.get('password2')  # Mot de passe de l'utilisateur
+
+    # Validation des champs
+    if type_versement not in ['C', 'F']:
+        return jsonify({'erreur': 'Type de versement invalide (doit être C ou F)'}), 400
+    try:
+        montant = float(montant)
+    except ValueError:
+        return jsonify({'erreur': 'Le montant doit être un nombre valide'}), 400
+    if not justificatif:
+        justificatif = f"Versement {'client' if type_versement == 'C' else 'fournisseur'}"
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur:
+            return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
+        if utilisateur['password2'] != password2:
+            return jsonify({'erreur': 'Mot de passe incorrect'}), 401
+
+        # Vérifier le client ou fournisseur
+        if type_versement == 'C':
+            cur.execute("SELECT numero_clt, nom, solde FROM client WHERE numero_clt = %s AND user_id = %s", (numero_cf, user_id))
+        else:
+            cur.execute("SELECT numero_fou, nom, solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_cf, user_id))
+        cf = cur.fetchone()
+        if not cf:
+            return jsonify({'erreur': f"{'Client' if type_versement == 'C' else 'Fournisseur'} non trouvé"}), 404
+
+        # Insérer le versement dans MOUVEMENTC
+        cur.execute(
+            """
+            INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING numero_mc
+            """,
+            (
+                datetime.utcnow(),
+                datetime.utcnow(),
+                str(montant)[:30],  # Truncate to fit char(30)
+                justificatif[:255],  # Truncate to fit char(255)
+                numero_util,
+                f"VERSEMENT {type_versement}",
+                type_versement,
+                numero_cf,
+                user_id
+            )
+        )
+        numero_mc = cur.fetchone()['numero_mc']
+
+        # Mettre à jour le solde
+        current_solde = float(cf['solde'] or 0)
+        new_solde = current_solde + montant
+        new_solde_str = f"{new_solde:.2f}"
+        
+        if type_versement == 'C':
+            cur.execute("UPDATE client SET solde = %s WHERE numero_clt = %s AND user_id = %s", (new_solde_str, numero_cf, user_id))
+        else:
+            cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s", (new_solde_str, numero_cf, user_id))
+
+        conn.commit()
+        return jsonify({'statut': 'Versement ajouté', 'numero_mc': numero_mc}), 201
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur ajout versement: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+@app.route('/historique_versements', methods=['GET'])
+def historique_versements():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    selected_date = request.args.get('date')
+    type_versement = request.args.get('type')  # 'C', 'F', ou vide pour tous
+    numero_cf = request.args.get('numero_cf')  # ID client ou fournisseur
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 10))
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Définir la plage de dates
+        if selected_date:
+            try:
+                date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
+        else:
+            date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # Construire la requête
+        query = """
+            SELECT 
+                m.numero_mc,
+                m.date_mc,
+                m.time_mc,
+                m.montant,
+                m.justificatif,
+                m.numero_util,
+                u.nom AS utilisateur_nom,
+                m.origine,
+                m.cf,
+                m.numero_cf,
+                COALESCE(c.nom, f.nom) AS nom_cf
+            FROM MOUVEMENTC m
+            LEFT JOIN utilisateur u ON m.numero_util = u.numero_util
+            LEFT JOIN client c ON m.cf = 'C' AND m.numero_cf = c.numero_clt
+            LEFT JOIN fournisseur f ON m.cf = 'F' AND m.numero_cf = f.numero_fou
+            WHERE m.user_id = %s
+            AND m.date_mc >= %s
+            AND m.date_mc <= %s
+        """
+        params = [user_id, date_start, date_end]
+
+        # Filtres
+        if type_versement in ['C', 'F']:
+            query += " AND m.cf = %s"
+            params.append(type_versement)
+        if numero_cf:
+            query += " AND m.numero_cf = %s"
+            params.append(int(numero_cf))
+
+        # Pagination
+        query += " ORDER BY m.date_mc DESC"
+        query += " LIMIT %s OFFSET %s"
+        params.extend([per_page, (page - 1) * per_page])
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        # Compter le total pour la pagination
+        count_query = """
+            SELECT COUNT(*) 
+            FROM MOUVEMENTC m
+            WHERE m.user_id = %s
+            AND m.date_mc >= %s
+            AND m.date_mc <= %s
+        """
+        count_params = [user_id, date_start, date_end]
+        if type_versement in ['C', 'F']:
+            count_query += " AND m.cf = %s"
+            count_params.append(type_versement)
+        if numero_cf:
+            count_query += " AND m.numero_cf = %s"
+            count_params.append(int(numero_cf))
+
+        cur.execute(count_query, count_params)
+        total_count = cur.fetchone()['count']
+
+        # Formater la réponse
+        versements = [
+            {
+                'numero_mc': row['numero_mc'],
+                'date_mc': row['date_mc'].isoformat(),
+                'time_mc': row['time_mc'].isoformat(),
+                'montant': row['montant'],
+                'justificatif': row['justificatif'],
+                'numero_util': row['numero_util'],
+                'utilisateur_nom': row['utilisateur_nom'] or 'N/A',
+                'origine': row['origine'],
+                'cf': row['cf'],
+                'numero_cf': row['numero_cf'],
+                'nom_cf': row['nom_cf'] or 'N/A'
+            }
+            for row in rows
+        ]
+
+        cur.close()
+        conn.close()
+
+        return jsonify({
+            'versements': versements,
+            'total': total_count,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (total_count + per_page - 1) // per_page
+        }), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération historique: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
