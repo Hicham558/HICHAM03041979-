@@ -1026,7 +1026,7 @@ def receptions_jour():
             SELECT 
                 m.numero_mouvement,
                 m.date_m,
-                m.numero_fou,
+                m.numero_four,
                 f.nom AS fournisseur_nom,
                 m.numero_util,
                 u.nom AS utilisateur_nom,
