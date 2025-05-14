@@ -1013,78 +1013,99 @@ def receptions_jour():
     if not isinstance(user_id, str):
         return user_id
 
-    date = request.args.get('date')
-    numero_util = request.args.get('numero_util', '0')
-    numero_four = request.args.get('numero_four', '')
+    selected_date = request.args.get('date')
+    numero_util = request.args.get('numero_util')
 
-    conn = None
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        if selected_date:
+            try:
+                date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
+                date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
+                date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
+            except ValueError:
+                return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
+        else:
+            date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
         query = """
             SELECT 
                 m.numero_mouvement,
                 m.date_m,
+                m.nature,
                 m.numero_four,
                 f.nom AS fournisseur_nom,
                 m.numero_util,
                 u.nom AS utilisateur_nom,
-                COALESCE((
-                    SELECT json_agg(
-                        json_build_object(
-                            'numero_item', ml.numero_item,
-                            'designation', i.designation,
-                            'qtea', ml.qtea,
-                            'nprix', ml.nprix,
-                            'total_ligne', ml.qtea * ml.nprix
-                        )
-                    )
-                    FROM mouvement_ligne ml
-                    JOIN item i ON ml.numero_item = i.numero_item
-                    WHERE ml.numero_mouvement = m.numero_mouvement
-                ), '[]'::json) AS lignes
+                a2.numero_item,
+                a2.qtea,
+                CAST(COALESCE(NULLIF(a2.nprix, ''), '0') AS FLOAT) AS nprix,
+                i.designation
             FROM mouvement m
             LEFT JOIN fournisseur f ON m.numero_four = f.numero_fou
             LEFT JOIN utilisateur u ON m.numero_util = u.numero_util
-            WHERE m.user_id = %s
+            JOIN attache2 a2 ON m.numero_mouvement = a2.numero_mouvement
+            JOIN item i ON a2.numero_item = i.numero_item
+            WHERE m.user_id = %s 
+            AND m.date_m >= %s 
+            AND m.date_m <= %s
+            AND m.nature = 'Bon de réception'
         """
-        params = [user_id]
+        params = [user_id, date_start, date_end]
 
-        if date:
-            query += " AND DATE(m.date_m) = %s"
-            params.append(date)
         if numero_util and numero_util != '0':
             query += " AND m.numero_util = %s"
-            params.append(numero_util)
-        if numero_four and numero_four != '':
-            query += " AND m.numero_four = %s"
-            params.append(numero_four)
+            params.append(int(numero_util))
 
-        query += " ORDER BY m.date_m DESC"
+        query += " ORDER BY m.numero_mouvement DESC"
 
         cur.execute(query, params)
-        receptions = cur.fetchall()
+        rows = cur.fetchall()
 
-        # Calculer le total
-        total = 0
-        for reception in receptions:
-            for ligne in reception['lignes']:
-                total += float(ligne['total_ligne'])
+        receptions = []
+        total = 0.0
+        receptions_map = {}
 
-        print(f"Receptions query result for user {user_id}, date {date}, numero_four {numero_four}: {len(receptions)} receptions")  # Debugging
+        for row in rows:
+            if row['numero_mouvement'] not in receptions_map:
+                receptions_map[row['numero_mouvement']] = {
+                    'numero_mouvement': row['numero_mouvement'],
+                    'date_m': row['date_m'].isoformat(),
+                    'nature': row['nature'],
+                    'fournisseur_nom': row['fournisseur_nom'] or 'N/A',
+                    'utilisateur_nom': row['utilisateur_nom'] or 'N/A',
+                    'lignes': []
+                }
+
+            receptions_map[row['numero_mouvement']]['lignes'].append({
+                'numero_item': row['numero_item'],
+                'designation': row['designation'],
+                'qtea': row['qtea'],
+                'nprix': str(row['nprix']),
+                'total_ligne': str(float(row['qtea']) * float(row['nprix']))
+            })
+
+            total += float(row['qtea']) * float(row['nprix'])
+
+        receptions = list(receptions_map.values())
+
+        cur.close()
+        conn.close()
 
         return jsonify({
             'receptions': receptions,
             'total': f"{total:.2f}"
         }), 200
+
     except Exception as e:
-        print(f"Erreur récupération réceptions: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
-    finally:
         if conn:
             cur.close()
             conn.close()
+        print(f"Erreur récupération réceptions: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
