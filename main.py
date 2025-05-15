@@ -1110,6 +1110,45 @@ def receptions_jour():
             conn.close()
         print(f"Erreur récupération réceptions: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
+@app.route('/parametres', methods=['GET'])
+def get_parametres():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+
+    cur = conn.cursor()
+    cur.execute("SELECT param FROM tmp WHERE user_id = %s", (user_id,))
+    result = cur.fetchone()
+    cur.close()
+
+    if result:
+        return jsonify(json.loads(result[0])), 200
+    return jsonify({}), 200
+
+@app.route('/parametres', methods=['PUT'])
+def update_parametres():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+
+    data = request.get_json()
+    param_json = json.dumps({
+        'companyName': data.get('companyName', ''),
+        'companyAddress': data.get('companyAddress', ''),
+        'companyPhone': data.get('companyPhone', '')
+    })
+
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO tmp (user_id, param) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET param = %s",
+        (user_id, param_json, param_json)
+    )
+    conn.commit()
+    cur.close()
+
+    return jsonify({'message': 'Paramètres mis à jour'}), 200
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
