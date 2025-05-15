@@ -1292,24 +1292,23 @@ def historique_versements():
 
 
 
+
 # GET /parametres
 @app.route('/parametres', methods=['GET'])
 def get_parametres():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
         return user_id  # Erreur 401 si X-User-ID manquant
-
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT r1 FROM tmp WHERE user_id = %s", (user_id,))
+        cur.execute("SELECT PARAM FROM tmp WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
         cur.close()
         conn.close()
-
-        if row and row['r1']:
+        if row and row['param']:
             try:
-                params = json.loads(row['r1'])
+                params = json.loads(row['param'])
                 return jsonify(params), 200
             except json.JSONDecodeError:
                 print(f"Erreur décodage JSON pour user_id={user_id}")
@@ -1324,28 +1323,24 @@ def get_parametres():
 def update_parametres():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si X-User-ID manquant
-
+        return user_id  # Erreur 401
     data = request.get_json()
     if not data:
         print("Erreur: Données JSON manquantes")
         return jsonify({"erreur": "Données requises"}), 400
-
     try:
-        # Sérialiser les paramètres en JSON
-        r1_json = json.dumps(data)
-        if len(r1_json) > 255:
-            print("Erreur: Données JSON trop longues pour r1")
+        param_json = json.dumps(data)
+        if len(param_json) > 255:  # Ajuste si PARAM est plus grand, par exemple VARCHAR(1000)
+            print("Erreur: Données JSON trop longues pour PARAM")
             return jsonify({"erreur": "Données trop volumineuses"}), 400
-
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO tmp (user_id, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO tmp (user_id, PARAM)
+            VALUES (%s, %s)
             ON CONFLICT (user_id)
-            DO UPDATE SET r1 = EXCLUDED.r1
-        """, (user_id, r1_json, None, None, None, None, None, None, None, None, None))
+            DO UPDATE SET PARAM = EXCLUDED.PARAM
+        """, (user_id, param_json))
         conn.commit()
         cur.close()
         conn.close()
