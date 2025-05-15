@@ -1116,12 +1116,12 @@ def get_parametres():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
+    
     cur = conn.cursor()
     cur.execute("SELECT param FROM tmp WHERE user_id = %s", (user_id,))
     result = cur.fetchone()
     cur.close()
-
+    
     if result:
         return jsonify(json.loads(result[0])), 200
     return jsonify({}), 200
@@ -1131,23 +1131,30 @@ def update_parametres():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
+    
     data = request.get_json()
     param_json = json.dumps({
         'companyName': data.get('companyName', ''),
         'companyAddress': data.get('companyAddress', ''),
-        'companyPhone': data.get('companyPhone', '')
+        'companyPhone': data.get('companyPhone', ''),
+        'companyLogo': data.get('companyLogo', '')
     })
-
+    
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO tmp (user_id, param) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET param = %s",
+        """
+        INSERT INTO tmp (user_id, param)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id)
+        DO UPDATE SET param = %s
+        """,
         (user_id, param_json, param_json)
     )
     conn.commit()
     cur.close()
-
+    
     return jsonify({'message': 'Paramètres mis à jour'}), 200
+
 
 # Lancer l'application
 if __name__ == '__main__':
