@@ -1290,6 +1290,74 @@ def historique_versements():
         return jsonify({'erreur': str(e)}), 500
 
 
+
+
+# GET /parametres
+@app.route('/parametres', methods=['GET'])
+def get_parametres():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si X-User-ID manquant
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT r1 FROM tmp WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if row and row['r1']:
+            try:
+                params = json.loads(row['r1'])
+                return jsonify(params), 200
+            except json.JSONDecodeError:
+                print(f"Erreur décodage JSON pour user_id={user_id}")
+                return jsonify({}), 200
+        return jsonify({}), 200
+    except Exception as e:
+        print(f"Erreur récupération paramètres: {str(e)}")
+        return jsonify({"erreur": str(e)}), 500
+
+# PUT /parametres
+@app.route('/parametres', methods=['PUT'])
+def update_parametres():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si X-User-ID manquant
+
+    data = request.get_json()
+    if not data:
+        print("Erreur: Données JSON manquantes")
+        return jsonify({"erreur": "Données requises"}), 400
+
+    try:
+        # Sérialiser les paramètres en JSON
+        r1_json = json.dumps(data)
+        if len(r1_json) > 255:
+            print("Erreur: Données JSON trop longues pour r1")
+            return jsonify({"erreur": "Données trop volumineuses"}), 400
+
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO tmp (user_id, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id)
+            DO UPDATE SET r1 = EXCLUDED.r1
+        """, (user_id, r1_json, None, None, None, None, None, None, None, None, None))
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"Paramètres mis à jour pour user_id={user_id}")
+        return jsonify({"message": "Paramètres mis à jour"}), 200
+    except json.JSONDecodeError:
+        print("Erreur: Données JSON invalides")
+        return jsonify({"erreur": "Données JSON invalides"}), 400
+    except Exception as e:
+        print(f"Erreur mise à jour paramètres: {str(e)}")
+        return jsonify({"erreur": str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
