@@ -1298,7 +1298,7 @@ def historique_versements():
 def get_parametres():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401 si X-User-ID manquant
+        return user_id  # Erreur 401
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1330,9 +1330,6 @@ def update_parametres():
         return jsonify({"erreur": "Données requises"}), 400
     try:
         param_json = json.dumps(data)
-        if len(param_json) > 255:  # Ajuste si PARAM est plus grand, par exemple VARCHAR(1000)
-            print("Erreur: Données JSON trop longues pour PARAM")
-            return jsonify({"erreur": "Données trop volumineuses"}), 400
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
