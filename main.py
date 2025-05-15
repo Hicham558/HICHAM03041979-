@@ -1292,14 +1292,12 @@ def historique_versements():
 
 
 
-
-
 # GET /parametres
 @app.route('/parametres', methods=['GET'])
 def get_parametres():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401
+        return user_id
     try:
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1310,15 +1308,15 @@ def get_parametres():
         if row and row['param']:
             try:
                 params = json.loads(row['param'])
-                print(f"Paramètres récupérés pour user_id={user_id}: {params}")
+                print(f"GET /parametres: Succès pour user_id={user_id}, données: {params}")
                 return jsonify(params), 200
             except json.JSONDecodeError as e:
-                print(f"Erreur décodage JSON pour user_id={user_id}: {str(e)}")
+                print(f"GET /parametres: Erreur JSON pour user_id={user_id}: {str(e)}")
                 return jsonify({}), 200
-        print(f"Aucun paramètre trouvé pour user_id={user_id}")
+        print(f"GET /parametres: Aucun paramètre pour user_id={user_id}")
         return jsonify({}), 200
     except Exception as e:
-        print(f"Erreur récupération paramètres pour user_id={user_id}: {str(e)}")
+        print(f"GET /parametres: Erreur pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": str(e)}), 500
 
 # PUT /parametres
@@ -1326,13 +1324,14 @@ def get_parametres():
 def update_parametres():
     user_id = validate_user_id()
     if not isinstance(user_id, str):
-        return user_id  # Erreur 401
+        return user_id
     data = request.get_json()
     if not data:
-        print("Erreur: Données JSON manquantes")
+        print(f"PUT /parametres: Données JSON manquantes pour user_id={user_id}")
         return jsonify({"erreur": "Données requises"}), 400
     try:
         param_json = json.dumps(data)
+        print(f"PUT /parametres: Données reçues pour user_id={user_id}: {param_json}")
         conn = get_conn()
         cur = conn.cursor()
         cur.execute("""
@@ -1344,14 +1343,15 @@ def update_parametres():
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Paramètres mis à jour pour user_id={user_id}: {param_json}")
+        print(f"PUT /parametres: Succès pour user_id={user_id}")
         return jsonify({"message": "Paramètres mis à jour"}), 200
     except json.JSONDecodeError as e:
-        print(f"Erreur JSON pour user_id={user_id}: {str(e)}")
+        print(f"PUT /parametres: Erreur JSON pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": "Données JSON invalides"}), 400
     except Exception as e:
-        print(f"Erreur mise à jour paramètres pour user_id={user_id}: {str(e)}")
+        print(f"PUT /parametres: Erreur pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": str(e)}), 500
+
 
 
 
