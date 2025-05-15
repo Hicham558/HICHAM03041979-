@@ -1309,13 +1309,15 @@ def get_parametres():
         if row and row['param']:
             try:
                 params = json.loads(row['param'])
+                print(f"Paramètres récupérés pour user_id={user_id}: {params}")
                 return jsonify(params), 200
-            except json.JSONDecodeError:
-                print(f"Erreur décodage JSON pour user_id={user_id}")
+            except json.JSONDecodeError as e:
+                print(f"Erreur décodage JSON pour user_id={user_id}: {str(e)}")
                 return jsonify({}), 200
+        print(f"Aucun paramètre trouvé pour user_id={user_id}")
         return jsonify({}), 200
     except Exception as e:
-        print(f"Erreur récupération paramètres: {str(e)}")
+        print(f"Erreur récupération paramètres pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": str(e)}), 500
 
 # PUT /parametres
@@ -1341,14 +1343,16 @@ def update_parametres():
         conn.commit()
         cur.close()
         conn.close()
-        print(f"Paramètres mis à jour pour user_id={user_id}")
+        print(f"Paramètres mis à jour pour user_id={user_id}: {param_json}")
         return jsonify({"message": "Paramètres mis à jour"}), 200
-    except json.JSONDecodeError:
-        print("Erreur: Données JSON invalides")
+    except json.JSONDecodeError as e:
+        print(f"Erreur JSON pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": "Données JSON invalides"}), 400
     except Exception as e:
-        print(f"Erreur mise à jour paramètres: {str(e)}")
+        print(f"Erreur mise à jour paramètres pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": str(e)}), 500
+
+
 
 # Lancer l'application
 if __name__ == '__main__':
