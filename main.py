@@ -25,44 +25,6 @@ def validate_user_id():
     return user_id
 
 
-
-# Initialisation de la table tmp
-def init_tmp_table():
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        # Créer la table si elle n'existe pas
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS tmp (
-                n SERIAL PRIMARY KEY,
-                user_id VARCHAR(255) NOT NULL,
-                PARAM TEXT
-            )
-        """)
-        # Vérifier et ajouter la contrainte UNIQUE si absente
-        cur.execute("""
-            DO $$ 
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM pg_constraint 
-                    WHERE conname = 'tmp_user_id_key' 
-                    AND contype = 'u'
-                ) THEN
-                    ALTER TABLE tmp ADD CONSTRAINT tmp_user_id_key UNIQUE (user_id);
-                END IF;
-            END $$;
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        print("Table tmp vérifiée et contrainte UNIQUE assurée")
-    except Exception as e:
-        print(f"Erreur lors de l'initialisation de la table tmp: {str(e)}")
-        raise
-
-# Appeler l'initialisation au démarrage
-init_tmp_table()
-
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
 def index():
