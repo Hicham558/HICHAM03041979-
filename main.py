@@ -1180,13 +1180,14 @@ def ajouter_versement():
                     (new_solde_str, numero_cf, user_id))
 
         # Insérer le versement dans MOUVEMENTC
+        now = datetime.utcnow()  # Ex. 2025-05-15 02:12:00.123456
         cur.execute(
             """
             INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf, user_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING numero_mc
             """,
-            (datetime.utcnow().date(), datetime.utcnow().time(), f"{montant:.2f}", justificatif,
+            (now.date(), now, f"{montant:.2f}", justificatif,
              numero_util, origine, type_versement, numero_cf, user_id)
         )
         numero_mc = cur.fetchone()['numero_mc']
