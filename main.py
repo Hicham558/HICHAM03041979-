@@ -1292,6 +1292,18 @@ def historique_versements():
 
 
 
+# Route pour vérifier que l'API est en ligne
+@app.route('/', methods=['GET'])
+def index():
+    try:
+        conn = get_conn()
+        conn.close()
+        return 'API en ligne - Connexion PostgreSQL OK'
+    except Exception as e:
+        return f'Erreur connexion DB : {e}', 500
+
+# [Les autres routes (clients, fournisseurs, produits, etc.) restent inchangées...]
+
 # GET /parametres
 @app.route('/parametres', methods=['GET'])
 def get_parametres():
@@ -1351,6 +1363,7 @@ def update_parametres():
     except Exception as e:
         print(f"PUT /parametres: Erreur pour user_id={user_id}: {str(e)}")
         return jsonify({"erreur": str(e)}), 500
+
 
 
 
