@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
+import json
 import os
 from psycopg2.extras import RealDictCursor
 from datetime import datetime,timedelta
