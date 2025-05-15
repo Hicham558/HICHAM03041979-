@@ -1289,6 +1289,195 @@ def historique_versements():
         print(f"Erreur récupération historique versements: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/annuler_versement', methods=['DELETE'])
+def annuler_versement():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    data = request.get_json()
+    if not data or 'numero_mc' not in data or 'type' not in data or 'numero_cf' not in data or 'numero_util' not in data or 'password2' not in data:
+        print("Erreur: Données d'annulation invalides")
+        return jsonify({"error": "Numéro de versement, type, numéro client/fournisseur, utilisateur ou mot de passe manquant"}), 400
+
+    numero_mc = data.get('numero_mc')
+    type_versement = data.get('type')
+    numero_cf = data.get('numero_cf')
+    numero_util = data.get('numero_util')
+    password2 = data.get('password2')
+
+    if type_versement not in ['C', 'F']:
+        return jsonify({"error": "Type invalide (doit être 'C' ou 'F')"}), 400
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur:
+            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            return jsonify({"error": "Utilisateur non trouvé"}), 400
+        if utilisateur['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
+
+        # Récupérer le versement
+        cur.execute("SELECT montant, cf, numero_cf FROM MOUVEMENTC WHERE numero_mc = %s AND user_id = %s AND origine IN ('VERSEMENT C', 'VERSEMENT F')", 
+                    (numero_mc, user_id))
+        versement = cur.fetchone()
+        if not versement:
+            print(f"Erreur: Versement {numero_mc} non trouvé")
+            return jsonify({"error": "Versement non trouvé"}), 404
+
+        montant = float(versement['montant'])
+
+        # Déterminer la table et la colonne ID
+        if versement['cf'] == 'C':
+            table = 'client'
+            id_column = 'numero_clt'
+        else:  # 'F'
+            table = 'fournisseur'
+            id_column = 'numero_fou'
+
+        # Vérifier l'entité
+        cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s AND user_id = %s", (numero_cf, user_id))
+        entity = cur.fetchone()
+        if not entity:
+            print(f"Erreur: {'Client' if versement['cf'] == 'C' else 'Fournisseur'} {numero_cf} non trouvé")
+            return jsonify({"error": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
+
+        # Restaurer le solde
+        current_solde = float(entity['solde'] or '0.0')
+        new_solde = current_solde - montant  # Inverser l'effet du versement
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute(f"UPDATE {table} SET solde = %s WHERE {id_column} = %s AND user_id = %s",
+                    (new_solde_str, numero_cf, user_id))
+
+        # Supprimer le versement
+        cur.execute("DELETE FROM MOUVEMENTC WHERE numero_mc = %s AND user_id = %s", (numero_mc, user_id))
+
+        conn.commit()
+        print(f"Versement annulé: numero_mc={numero_mc}, type={type_versement}, montant={montant}")
+        return jsonify({"statut": "Versement annulé"}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur annulation versement: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+@app.route('/modifier_versement', methods=['PUT'])
+def modifier_versement():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    data = request.get_json()
+    if not data or 'numero_mc' not in data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data or 'password2' not in data:
+        print("Erreur: Données de modification invalides")
+        return jsonify({"error": "Numéro de versement, type, numéro client/fournisseur, montant, utilisateur ou mot de passe manquant"}), 400
+
+    numero_mc = data.get('numero_mc')
+    type_versement = data.get('type')
+    numero_cf = data.get('numero_cf')
+    montant = data.get('montant')
+    justificatif = data.get('justificatif', '')
+    numero_util = data.get('numero_util')
+    password2 = data.get('password2')
+
+    if type_versement not in ['C', 'F']:
+        return jsonify({"error": "Type invalide (doit être 'C' ou 'F')"}), 400
+
+    try:
+        montant = float(montant)
+        if montant == 0:
+            return jsonify({"error": "Le montant ne peut pas être zéro"}), 400
+
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur:
+            print(f"Erreur: Utilisateur {numero_util} non trouvé")
+            return jsonify({"error": "Utilisateur non trouvé"}), 400
+        if utilisateur['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
+
+        # Récupérer le versement existant
+        cur.execute("SELECT montant, cf, numero_cf FROM MOUVEMENTC WHERE numero_mc = %s AND user_id = %s AND origine IN ('VERSEMENT C', 'VERSEMENT F')", 
+                    (numero_mc, user_id))
+        versement = cur.fetchone()
+        if not versement:
+            print(f"Erreur: Versement {numero_mc} non trouvé")
+            return jsonify({"error": "Versement non trouvé"}), 404
+
+        old_montant = float(versement['montant'])
+
+        # Déterminer la table et la colonne ID
+        if versement['cf'] == 'C':
+            table = 'client'
+            id_column = 'numero_clt'
+            origine = 'VERSEMENT C'
+        else:  # 'F'
+            table = 'fournisseur'
+            id_column = 'numero_fou'
+            origine = 'VERSEMENT F'
+
+        # Vérifier l'entité
+        cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s AND user_id = %s", (numero_cf, user_id))
+        entity = cur.fetchone()
+        if not entity:
+            print(f"Erreur: {'Client' if versement['cf'] == 'C' else 'Fournisseur'} {numero_cf} non trouvé")
+            return jsonify({"error": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
+
+        # Ajuster le solde
+        current_solde = float(entity['solde'] or '0.0')
+        new_solde = current_solde - old_montant + montant  # Annuler l'ancien montant et appliquer le nouveau
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute(f"UPDATE {table} SET solde = %s WHERE {id_column} = %s AND user_id = %s",
+                    (new_solde_str, numero_cf, user_id))
+
+        # Mettre à jour le versement
+        now = datetime.utcnow()
+        cur.execute(
+            """
+            UPDATE MOUVEMENTC 
+            SET montant = %s, justificatif = %s, date_mc = %s, time_mc = %s
+            WHERE numero_mc = %s AND user_id = %s
+            """,
+            (f"{montant:.2f}", justificatif, now.date(), now, numero_mc, user_id)
+        )
+
+        conn.commit()
+        print(f"Versement modifié: numero_mc={numero_mc}, type={type_versement}, montant={montant}")
+        return jsonify({"statut": "Versement modifié"}), 200
+
+    except ValueError:
+        return jsonify({"error": "Le montant doit être un nombre valide"}), 400
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur modification versement: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 
 # Lancer l'application
 if __name__ == '__main__':
