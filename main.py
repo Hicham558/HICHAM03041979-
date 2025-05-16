@@ -71,36 +71,66 @@ def ajouter_client():
 
     data = request.get_json()
     nom = data.get('nom')
-    solde = data.get('solde')
-    reference = data.get('reference')
     contact = data.get('contact')
     adresse = data.get('adresse')
 
-    # Validation des champs obligatoires
-    if not all([nom, solde is not None, reference]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (nom, solde, reference)'}), 400
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
 
     try:
-        solde = float(solde)  # Convertir en float
-        if solde < 0:
-            return jsonify({'erreur': 'Le solde doit être positif'}), 400
-
         conn = get_conn()
         cur = conn.cursor()
+        # Compter les clients pour cet user_id
+        cur.execute("SELECT COUNT(*) FROM client WHERE user_id = %s", (user_id,))
+        count = cur.fetchone()[0]
+        reference = f"C{count + 1}"
+
+        # Insérer avec solde = '0.00'
         cur.execute(
             "INSERT INTO client (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_clt",
-            (nom, solde, reference, contact, adresse, user_id)
+            (nom, '0.00', reference, contact, adresse, user_id)
         )
         client_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Client ajouté', 'id': client_id}), 201
-    except ValueError:
-        return jsonify({'erreur': 'Le solde doit être un nombre valide'}), 400
+        return jsonify({'statut': 'Client ajouté', 'id': client_id, 'reference': reference}), 201
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/modifier_client/<numero_clt>', methods=['PUT'])
+def modifier_client(numero_clt):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE client SET nom = %s, contact = %s, adresse = %s WHERE numero_clt = %s AND user_id = %s RETURNING numero_clt",
+            (nom, contact, adresse, numero_clt, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Client non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Client modifié'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+        
 # --- Fournisseurs ---
 @app.route('/liste_fournisseurs', methods=['GET'])
 def liste_fournisseurs():
@@ -131,6 +161,39 @@ def liste_fournisseurs():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/modifier_fournisseur/<numero_fou>', methods=['PUT'])
+def modifier_fournisseur(numero_fou):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE fournisseur SET nom = %s, contact = %s, adresse = %s WHERE numero_fou = %s AND user_id = %s RETURNING numero_fou",
+            (nom, contact, adresse, numero_fou, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Fournisseur non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Fournisseur modifié'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 @app.route('/ajouter_fournisseur', methods=['POST'])
 def ajouter_fournisseur():
     user_id = validate_user_id()
@@ -139,32 +202,30 @@ def ajouter_fournisseur():
 
     data = request.get_json()
     nom = data.get('nom')
-    solde = data.get('solde')
-    reference = data.get('reference')
     contact = data.get('contact')
     adresse = data.get('adresse')
 
-    if not all([nom, solde is not None, reference]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (nom, solde, reference)'}), 400
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
 
     try:
-        solde = float(solde)
-        if solde < 0:
-            return jsonify({'erreur': 'Le solde doit être positif'}), 400
-
         conn = get_conn()
         cur = conn.cursor()
+        # Compter les fournisseurs
+        cur.execute("SELECT COUNT(*) FROM fournisseur WHERE user_id = %s", (user_id,))
+        count = cur.fetchone()[0]
+        reference = f"F{count + 1}"
+
+        # Insérer avec solde = '0.00'
         cur.execute(
             "INSERT INTO fournisseur (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_fou",
-            (nom, solde, reference, contact, adresse, user_id)
+            (nom, '0.00', reference, contact, adresse, user_id)
         )
         fournisseur_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Fournisseur ajouté', 'id': fournisseur_id}), 201
-    except ValueError:
-        return jsonify({'erreur': 'Le solde doit être un nombre valide'}), 400
+        return jsonify({'statut': 'Fournisseur ajouté', 'id': fournisseur_id, 'reference': reference}), 201
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
@@ -178,7 +239,7 @@ def liste_produits():
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
+        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
@@ -190,11 +251,61 @@ def liste_produits():
                 'DESIGNATION': row[2],
                 'QTE': row[3],
                 'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00'  # prixba est VARCHAR, donc on retourne une chaîne
+                'PRIXBA': row[5] or '0.00',
+                'REF': row[6] or ''
             }
             for row in rows
         ]
         return jsonify(produits)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_item/<numero_item>', methods=['PUT'])
+def modifier_item(numero_item):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    designation = data.get('designation')
+    bar = data.get('bar')
+    prix = data.get('prix')
+    qte = data.get('qte')
+    prixba = data.get('prixba')
+
+    if not all([designation, bar, prix is not None, qte is not None]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
+
+    try:
+        prix = float(prix)
+        qte = int(qte)
+        if prix < 0 or qte < 0:
+            return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
+
+        conn = get_conn()
+        cur = conn.cursor()
+        # Vérifier l'unicité de bar (sauf pour cet item)
+        cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, numero_item))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Ce code-barres est déjà utilisé'}), 409
+
+        cur.execute(
+            "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_item",
+            (designation, bar, prix, qte, prixba or '0.00', numero_item, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Produit modifié'}), 200
+    except ValueError:
+        return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
@@ -209,7 +320,7 @@ def ajouter_item():
     bar = data.get('bar')
     prix = data.get('prix')
     qte = data.get('qte')
-    prixba = data.get('prixba')  # Prix d'achat (VARCHAR)
+    prixba = data.get('prixba')
 
     if not all([designation, bar, prix is not None, qte is not None]):
         return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
@@ -220,29 +331,41 @@ def ajouter_item():
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
-        # Vérifier si le code-barres existe déjà
         conn = get_conn()
+        conn.autocommit = False
         cur = conn.cursor()
+        # Verrouiller pour éviter les conflits sur ref
+        cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
+
+        # Vérifier l'unicité de bar
         cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
         if cur.fetchone():
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
 
-        # Insérer le produit avec prixba
+        # Générer ref
+        cur.execute("SELECT COUNT(*) FROM item")
+        count = cur.fetchone()[0]
+        ref = f"P{count + 1}"
+
+        # Insérer le produit
         cur.execute(
-            "INSERT INTO item (designation, bar, prix, qte, prixba, user_id) VALUES (%s, %s, %s, %s, %s, %s)",
-            (designation, bar, prix, qte, prixba or '0.00', user_id)
+            "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
+            (designation, bar, prix, qte, prixba or '0.00', ref, user_id)
         )
+        item_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Item ajouté'}), 201
+        return jsonify({'statut': 'Item ajouté', 'id': item_id, 'ref': ref}), 201
     except ValueError:
         return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
-
 
 
 @app.route('/valider_vente', methods=['POST'])
