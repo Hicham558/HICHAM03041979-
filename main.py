@@ -1479,6 +1479,77 @@ def modifier_versement():
             conn.close()
 
 
+
+@app.route('/situation_versements', methods=['GET'])
+def situation_versements():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    type_versement = request.args.get('type')  # 'C' ou 'F'
+    numero_cf = request.args.get('numero_cf')  # ID du client ou fournisseur
+
+    if not type_versement or type_versement not in ['C', 'F']:
+        return jsonify({'erreur': "Paramètre 'type' requis et doit être 'C' ou 'F'"}), 400
+    if not numero_cf:
+        return jsonify({'erreur': "Paramètre 'numero_cf' requis"}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        query = """
+            SELECT 
+                mc.numero_mc,
+                mc.date_mc,
+                mc.montant,
+                mc.justificatif,
+                mc.cf,
+                mc.numero_cf,
+                mc.numero_util,
+                COALESCE(cl.nom, f.nom) AS nom_cf,
+                u.nom AS utilisateur_nom
+            FROM MOUVEMENTC mc
+            LEFT JOIN client cl ON mc.cf = 'C' AND mc.numero_cf = cl.numero_clt
+            LEFT JOIN fournisseur f ON mc.cf = 'F' AND mc.numero_cf = f.numero_fou
+            LEFT JOIN utilisateur u ON mc.numero_util = u.numero_util
+            WHERE mc.user_id = %s
+            AND mc.origine IN ('VERSEMENT C', 'VERSEMENT F')
+            AND mc.cf = %s
+            AND mc.numero_cf = %s
+            ORDER BY mc.date_mc DESC, mc.time_mc DESC
+        """
+        params = [user_id, type_versement, numero_cf]
+
+        cur.execute(query, params)
+        rows = cur.fetchall()
+
+        versements = [
+            {
+                'numero_mc': row['numero_mc'],
+                'date_mc': row['date_mc'].strftime('%Y-%m-%d'),
+                'montant': str(row['montant']),
+                'justificatif': row['justificatif'] or '',
+                'cf': row['cf'],
+                'numero_cf': row['numero_cf'],
+                'nom_cf': row['nom_cf'] or 'N/A',
+                'utilisateur_nom': row['utilisateur_nom'] or 'N/A'
+            }
+            for row in rows
+        ]
+
+        cur.close()
+        conn.close()
+        print(f"Situation versements: type={type_versement}, numero_cf={numero_cf}, {len(versements)} versements")
+        return jsonify(versements), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération situation versements: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
