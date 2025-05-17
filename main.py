@@ -130,7 +130,31 @@ def modifier_client(numero_clt):
         return jsonify({'statut': 'Client modifié'}), 200
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
-        
+
+# --- Suppression Client ---
+@app.route('/supprimer_client/<numero_clt>', methods=['DELETE'])
+def supprimer_client(numero_clt):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM client WHERE numero_clt = %s AND user_id = %s", (numero_clt, user_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Client non trouvé'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Client supprimé'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+
+
 # --- Fournisseurs ---
 @app.route('/liste_fournisseurs', methods=['GET'])
 def liste_fournisseurs():
@@ -367,6 +391,27 @@ def ajouter_item():
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+# --- Suppression Produit ---
+@app.route('/supprimer_item/<numero_item>', methods=['DELETE'])
+def supprimer_item(numero_item):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Produit supprimé'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
 
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
