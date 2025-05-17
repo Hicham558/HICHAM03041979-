@@ -999,50 +999,49 @@ def liste_utilisateurs():
 
         utilisateurs = [
             {
-                'id': row[0],  # numero_util devient id pour correspondre au frontend
+                'numero': row[0],  # Changed from 'id' to 'numero' to match frontend
                 'nom': row[1],
-                'statut': row[2]  # statue devient statut
+                'statut': row[2]  # statue becomes statut
             }
             for row in rows
         ]
         return jsonify(utilisateurs)
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
-
-@app.route('/modifier_utilisateur/<numero_util>', methods=['PUT'])
+@app.route('/modifier_utilisateur/<int:numero_util>', methods=['PUT'])
 def modifier_utilisateur(numero_util):
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
-
     data = request.get_json()
     nom = data.get('nom')
+    password2 = data.get('password2')  # Optional
     statue = data.get('statue')
-    password2 = data.get('password2', None)  # Optionnel
+    user_id = data.get('user_id')  # New field from payload
 
-    if not nom or not statue:
-        return jsonify({'erreur': 'Les champs nom et statue sont obligatoires'}), 400
+    if not all([nom, statue, user_id]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, statue, user_id)'}), 400
+
+    if statue not in ['admin', 'emplo']:
+        return jsonify({'erreur': 'Statue invalide (doit être "admin" ou "emplo")'}), 400
+
+    # Optional: Verify user_id matches X-User-ID header
+    x_user_id = request.headers.get('X-User-ID')
+    if x_user_id and x_user_id != user_id:
+        return jsonify({'erreur': 'user_id non autorisé'}), 403
 
     try:
         conn = get_conn()
         cur = conn.cursor()
-        
         if password2:
             cur.execute(
-                "UPDATE utilisateur SET nom = %s, statue = %s, password2 = %s WHERE numero_util = %s AND user_id = %s RETURNING numero_util",
-                (nom, statue, password2, numero_util, user_id)
+                "UPDATE utilisateur SET nom = %s, password2 = %s, statue = %s, user_id = %s WHERE numero_util = %s",
+                (nom, password2, statue, user_id, numero_util)
             )
         else:
             cur.execute(
-                "UPDATE utilisateur SET nom = %s, statue = %s WHERE numero_util = %s AND user_id = %s RETURNING numero_util",
-                (nom, statue, numero_util, user_id)
+                "UPDATE utilisateur SET nom = %s, statue = %s, user_id = %s WHERE numero_util = %s",
+                (nom, statue, user_id, numero_util)
             )
-            
         if cur.rowcount == 0:
-            cur.close()
-            conn.close()
             return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
-
         conn.commit()
         cur.close()
         conn.close()
