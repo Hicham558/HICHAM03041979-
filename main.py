@@ -253,6 +253,30 @@ def ajouter_fournisseur():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+
+
+# --- Suppression fournisseur ---
+@app.route('/supprimer_fournisseur/<numero_fou>', methods=['DELETE'])
+def supprimer_fournisseur(numero_fou):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_fou, user_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Client non trouvé'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Fournisseur supprimé'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
