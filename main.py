@@ -1050,32 +1050,38 @@ def modifier_utilisateur(numero_util):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
-# POST /ajouter_utilisateur
 @app.route('/ajouter_utilisateur', methods=['POST'])
 def ajouter_utilisateur():
     data = request.get_json()
     nom = data.get('nom')
     password2 = data.get('password2')
     statue = data.get('statue')
+    user_id = data.get('user_id')  # New field from payload
 
-    if not all([nom, password2, statue]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (nom, password2, statue)'}), 400
+    # Validate all required fields
+    if not all([nom, password2, statue, user_id]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (nom, password2, statue, user_id)'}), 400
 
     if statue not in ['admin', 'emplo']:
         return jsonify({'erreur': 'Statue invalide (doit être "admin" ou "emplo")'}), 400
+
+    # Optional: Verify user_id matches X-User-ID header for security
+    x_user_id = request.headers.get('X-User-ID')
+    if x_user_id and x_user_id != user_id:
+        return jsonify({'erreur': 'user_id non autorisé'}), 403
 
     try:
         conn = get_conn()
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO utilisateur (nom, password2, statue) VALUES (%s, %s, %s) RETURNING numero_util",
-            (nom, password2, statue)
+            "INSERT INTO utilisateur (nom, password2, statue, user_id) VALUES (%s, %s, %s, %s) RETURNING numero_util",
+            (nom, password2, statue, user_id)
         )
-        user_id = cur.fetchone()[0]
+        numero_util = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Utilisateur ajouté', 'id': user_id}), 201
+        return jsonify({'statut': 'Utilisateur ajouté', 'id': numero_util}), 201
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
