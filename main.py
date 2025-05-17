@@ -911,23 +911,73 @@ def dashboard():
 # GET /liste_utilisateurs
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):  # Si validate_user_id retourne une erreur
+        return user_id
+
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT numero_util, nom, statue FROM utilisateur ORDER BY nom")
+        cur.execute("""
+            SELECT numero_util, nom, statue 
+            FROM utilisateur 
+            WHERE user_id = %s 
+            ORDER BY nom
+        """, (user_id,))
         rows = cur.fetchall()
         cur.close()
         conn.close()
 
         utilisateurs = [
             {
-                'numero_util': row[0],
+                'id': row[0],  # numero_util devient id pour correspondre au frontend
                 'nom': row[1],
-                'statue': row[2]
+                'statut': row[2]  # statue devient statut
             }
             for row in rows
         ]
         return jsonify(utilisateurs)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_utilisateur/<numero_util>', methods=['PUT'])
+def modifier_utilisateur(numero_util):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    statue = data.get('statue')
+    password2 = data.get('password2', None)  # Optionnel
+
+    if not nom or not statue:
+        return jsonify({'erreur': 'Les champs nom et statue sont obligatoires'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        
+        if password2:
+            cur.execute(
+                "UPDATE utilisateur SET nom = %s, statue = %s, password2 = %s WHERE numero_util = %s AND user_id = %s RETURNING numero_util",
+                (nom, statue, password2, numero_util, user_id)
+            )
+        else:
+            cur.execute(
+                "UPDATE utilisateur SET nom = %s, statue = %s WHERE numero_util = %s AND user_id = %s RETURNING numero_util",
+                (nom, statue, numero_util, user_id)
+            )
+            
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Utilisateur non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Utilisateur modifié'}), 200
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
