@@ -1796,121 +1796,7 @@ def situation_versements():
             conn.close()
         print(f"Erreur récupération situation versements: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
-
-@app.route('/annuler_vente', methods=['POST'])
-def annuler_vente():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id
-
-    data = request.get_json()
-    if not data or 'numero_comande' not in data or 'numero_util' not in data or 'password2' not in data:
-        print("Erreur: Données d'annulation vente invalides")
-        return jsonify({"error": "Numéro de commande, utilisateur ou mot de passe manquant"}), 400
-
-    numero_comande = data.get('numero_comande')
-    numero_util = data.get('numero_util')
-    password2 = data.get('password2')
-
-    conn = None
-    try:
-        conn = get_conn()
-        conn.autocommit = False
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # Vérifier l'utilisateur et le mot de passe
-        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
-        utilisateur = cur.fetchone()
-        if not utilisateur:
-            print(f"Erreur: Utilisateur {numero_util} non trouvé")
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
-        if utilisateur['password2'] != password2:
-            print(f"Erreur: Mot de passe incorrect pour l'utilisateur {numero_util}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
-
-        # Vérifier l'existence de la commande
-        cur.execute("""
-            SELECT numero_table, nature 
-            FROM comande 
-            WHERE numero_comande = %s AND user_id = %s
-        """, (numero_comande, user_id))
-        commande = cur.fetchone()
-        if not commande:
-            print(f"Erreur: Commande {numero_comande} non trouvée")
-            return jsonify({"error": "Commande non trouvée"}), 404
-
-        numero_table = commande['numero_table']
-        nature = commande['nature']
-
-        # Récupérer les lignes de la vente
-        cur.execute("""
-            SELECT numero_item, quantite, prixt 
-            FROM attache 
-            WHERE numero_comande = %s AND user_id = %s
-        """, (numero_comande, user_id))
-        lignes = cur.fetchall()
-
-        if not lignes:
-            print(f"Erreur: Aucune ligne trouvée pour la commande {numero_comande}")
-            return jsonify({"error": "Aucune ligne de vente trouvée"}), 404
-
-        # Restaurer le stock dans item
-        for ligne in lignes:
-            cur.execute("""
-                UPDATE item 
-                SET qte = qte + %s 
-                WHERE numero_item = %s AND user_id = %s
-            """, (ligne['quantite'], ligne['numero_item'], user_id))
-
-        # Restaurer le solde du client si vente à terme
-        if nature == 'BON DE L.' and numero_table != 0:
-            total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
-            cur.execute("""
-                SELECT solde 
-                FROM client 
-                WHERE numero_clt = %s AND user_id = %s
-            """, (numero_table, user_id))
-            client = cur.fetchone()
-            if not client:
-                raise Exception(f"Client {numero_table} non trouvé")
-
-            current_solde = float(client['solde'] or '0.0')
-            new_solde = current_solde - total_sale  # Inverser l'effet de la vente
-            new_solde_str = f"{new_solde:.2f}"
-
-            cur.execute("""
-                UPDATE client 
-                SET solde = %s 
-                WHERE numero_clt = %s AND user_id = %s
-            """, (new_solde_str, numero_table, user_id))
-            print(f"Solde client restauré: numero_clt={numero_table}, total_sale={total_sale}, new_solde={new_solde_str}")
-
-        # Supprimer les lignes de attache
-        cur.execute("""
-            DELETE FROM attache 
-            WHERE numero_comande = %s AND user_id = %s
-        """, (numero_comande, user_id))
-
-        # Supprimer la commande
-        cur.execute("""
-            DELETE FROM comande 
-            WHERE numero_comande = %s AND user_id = %s
-        """, (numero_comande, user_id))
-
-        conn.commit()
-        print(f"Vente annulée: numero_comande={numero_comande}, {len(lignes)} lignes")
-        return jsonify({"statut": "Vente annulée"}), 200
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        print(f"Erreur annulation vente: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if conn:
-            cur.close()
-            conn.close()
-
+Endpoint pour annuler une réception (sans hachage)
 @app.route('/annuler_reception', methods=['POST'])
 def annuler_reception():
     user_id = validate_user_id()
@@ -1932,8 +1818,8 @@ def annuler_reception():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
-        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        # Vérifier l'utilisateur et le mot de passe (comparaison directe)
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         utilisateur = cur.fetchone()
         if not utilisateur:
             print(f"Erreur: Utilisateur {numero_util} non trouvé")
@@ -2022,6 +1908,7 @@ def annuler_reception():
         if conn:
             cur.close()
             conn.close()
+
 
 # Lancer l'application
 if __name__ == '__main__':
