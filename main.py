@@ -2142,6 +2142,218 @@ def get_vente(numero_comande):
             conn.close()
         print(f"Erreur récupération vente: {str(e)}")
         return jsonify({"error": str(e)}), 500
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+import os
+from psycopg2.extras import RealDictCursor
+from datetime import datetime, timedelta
+
+app = Flask(__name__)
+CORS(app, origins=["https://hicham558.github.io", "https://firepoz-s7tl.vercel.app"])
+app.debug = True
+
+def get_conn():
+    url = os.environ['DATABASE_URL']
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(url, sslmode='require')
+
+def validate_user_id():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
+    return user_id
+
+# [Les routes existantes sont inchangées, elles sont omises pour brevité]
+
+@app.route('/reception/<int:numero_mouvement>', methods=['GET'])
+def get_reception(numero_mouvement):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Récupérer les détails du mouvement
+        cur.execute("""
+            SELECT m.numero_mouvement, m.numero_four, m.date_m, m.nature, m.numero_util,
+                   f.nom AS fournisseur_nom, u.nom AS utilisateur_nom
+            FROM mouvement m
+            LEFT JOIN fournisseur f ON m.numero_four = f.numero_fou
+            LEFT JOIN utilisateur u ON m.numero_util = u.numero_util
+            WHERE m.numero_mouvement = %s AND m.user_id = %s AND m.nature = 'Bon de réception'
+        """, (numero_mouvement, user_id))
+        mouvement = cur.fetchone()
+
+        if not mouvement:
+            return jsonify({"error": "Mouvement non trouvé"}), 404
+
+        # Récupérer les lignes du mouvement
+        cur.execute("""
+            SELECT a2.numero_item, a2.qtea, a2.nprix, a2.nqte, a2.pump, i.designation
+            FROM attache2 a2
+            JOIN item i ON a2.numero_item = i.numero_item
+            WHERE a2.numero_mouvement = %s AND a2.user_id = %s
+        """, (numero_mouvement, user_id))
+        lignes = cur.fetchall()
+
+        # Formater la réponse
+        response = {
+            'numero_mouvement': mouvement['numero_mouvement'],
+            'numero_four': mouvement['numero_four'],
+            'date_m': mouvement['date_m'].isoformat(),
+            'nature': mouvement['nature'],
+            'fournisseur_nom': mouvement['fournisseur_nom'] or 'N/A',
+            'utilisateur_nom': mouvement['utilisateur_nom'] or 'N/A',
+            'lignes': [
+                {
+                    'numero_item': ligne['numero_item'],
+                    'designation': ligne['designation'],
+                    'qtea': ligne['qtea'],
+                    'nprix': str(ligne['nprix']),
+                    'nqte': ligne['nqte'],
+                    'pump': str(ligne['pump'])
+                }
+                for ligne in lignes
+            ]
+        }
+
+        cur.close()
+        conn.close()
+        return jsonify(response), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération réception: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/modifier_reception/<int:numero_mouvement>', methods=['PUT'])
+def modifier_reception(numero_mouvement):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id
+
+    data = request.get_json()
+    if not data or 'lignes' not in data or not data['lignes'] or 'numero_util' not in data or 'password2' not in data:
+        return jsonify({"error": "Données de réception invalides, utilisateur ou mot de passe manquant"}), 400
+
+    numero_four = data.get('numero_four')
+    date_m = data.get('date_m', datetime.utcnow().isoformat())
+    lignes = data['lignes']
+    numero_util = data['numero_util']
+    password2 = data['password2']
+    nature = "Bon de réception"
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur or utilisateur['password2'] != password2:
+            return jsonify({"error": "Utilisateur ou mot de passe incorrect"}), 401
+
+        # Vérifier l'existence du mouvement
+        cur.execute("SELECT numero_four FROM mouvement WHERE numero_mouvement = %s AND user_id = %s AND nature = %s",
+                    (numero_mouvement, user_id, nature))
+        mouvement = cur.fetchone()
+        if not mouvement:
+            return jsonify({"error": "Mouvement non trouvé"}), 404
+        old_numero_four = mouvement['numero_four']
+
+        # Restaurer le stock des anciens articles
+        cur.execute("SELECT numero_item, qtea, nprix FROM attache2 WHERE numero_mouvement = %s AND user_id = %s",
+                    (numero_mouvement, user_id))
+        old_lignes = cur.fetchall()
+        old_total_cost = sum(float(ligne['qtea']) * float(ligne['nprix']) for ligne in old_lignes)
+
+        for ligne in old_lignes:
+            cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s AND user_id = %s",
+                        (ligne['qtea'], ligne['numero_item'], user_id))
+
+        # Restaurer le solde du fournisseur précédent
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s",
+                    (old_numero_four, user_id))
+        fournisseur = cur.fetchone()
+        if fournisseur:
+            current_solde = float(fournisseur['solde'] or '0.0')
+            new_solde = current_solde + old_total_cost  # Inverser l'effet de l'ancienne réception
+            new_solde_str = f"{new_solde:.2f}"
+            cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s",
+                        (new_solde_str, old_numero_four, user_id))
+
+        # Supprimer les anciennes lignes
+        cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s AND user_id = %s",
+                    (numero_mouvement, user_id))
+
+        # Mettre à jour le mouvement
+        cur.execute("""
+            UPDATE mouvement 
+            SET numero_four = %s, date_m = %s, numero_util = %s
+            WHERE numero_mouvement = %s AND user_id = %s
+        """, (numero_four, date_m, numero_util, numero_mouvement, user_id))
+
+        # Insérer les nouvelles lignes et ajuster le stock
+        new_total_cost = 0.0
+        for ligne in lignes:
+            qtea = float(ligne.get('qtea', 0))
+            nprix = float(ligne.get('nprix', 0))
+            if qtea <= 0:
+                raise Exception("La quantité ajoutée doit être positive")
+
+            # Calculer le stock mis à jour
+            cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s",
+                        (ligne.get('numero_item'), user_id))
+            item = cur.fetchone()
+            if not item:
+                raise Exception(f"Article {ligne.get('numero_item')} non trouvé")
+            nqte = float(item['qte'] or 0) + qtea
+            pump = item['prixba'] or '0.00'
+
+            # Insérer la nouvelle ligne
+            cur.execute("""
+                INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (ligne.get('numero_item'), numero_mouvement, qtea, nqte, str(nprix)[:30],
+                  str(pump)[:30], True, user_id))
+            cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s",
+                        (nqte, str(nprix), ligne.get('numero_item'), user_id))
+            new_total_cost += qtea * nprix
+
+        # Mettre à jour le solde du nouveau fournisseur
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s",
+                    (numero_four, user_id))
+        fournisseur = cur.fetchone()
+        if not fournisseur:
+            raise Exception(f"Fournisseur {numero_four} non trouvé")
+        current_solde = float(fournisseur['solde'] or '0.0')
+        new_solde = current_solde - new_total_cost  # Appliquer le nouveau coût
+        new_solde_str = f"{new_solde:.2f}"
+        cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s",
+                    (new_solde_str, numero_four, user_id))
+
+        conn.commit()
+        print(f"Réception modifiée: numero_mouvement={numero_mouvement}, {len(lignes)} lignes, new_total_cost={new_total_cost}")
+        return jsonify({"numero_mouvement": numero_mouvement, "statut": "Réception modifiée"}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Erreur modification réception: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
 
 # Lancer l'application
 if __name__ == '__main__':
