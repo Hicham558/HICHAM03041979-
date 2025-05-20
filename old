@@ -1797,7 +1797,6 @@ def situation_versements():
         print(f"Erreur récupération situation versements: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
 
-# Endpoint pour annuler une vente
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
     user_id = validate_user_id()
@@ -1805,11 +1804,12 @@ def annuler_vente():
         return user_id
 
     data = request.get_json()
-    if not data or 'numero_comande' not in data:
+    if not data or 'numero_comande' not in data or 'password2' not in data:
         print("Erreur: Données d'annulation vente invalides")
-        return jsonify({"error": "Numéro de commande manquant"}), 400
+        return jsonify({"error": "Numéro de commande ou mot de passe manquant"}), 400
 
     numero_comande = data.get('numero_comande')
+    password2 = data.get('password2')
 
     conn = None
     try:
@@ -1817,16 +1817,22 @@ def annuler_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'existence de la commande
+        # Vérifier l'existence de la commande et récupérer l'utilisateur
         cur.execute("""
-            SELECT numero_table, nature 
-            FROM comande 
-            WHERE numero_comande = %s AND user_id = %s
+            SELECT c.numero_table, c.nature, c.numero_util, u.password2 
+            FROM comande c
+            JOIN utilisateur u ON c.numero_util = u.numero_util
+            WHERE c.numero_comande = %s AND c.user_id = %s
         """, (numero_comande, user_id))
         commande = cur.fetchone()
         if not commande:
             print(f"Erreur: Commande {numero_comande} non trouvée")
             return jsonify({"error": "Commande non trouvée"}), 404
+
+        # Vérifier le mot de passe
+        if commande['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour annuler la commande {numero_comande}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la vente
         cur.execute("""
@@ -1847,6 +1853,26 @@ def annuler_vente():
                 SET qte = qte + %s 
                 WHERE numero_item = %s AND user_id = %s
             """, (ligne['quantite'], ligne['numero_item'], user_id))
+
+        # Si vente à terme (numero_table != 0), ajuster le solde du client
+        if commande['numero_table'] != 0:
+            total_sale = sum(float(ligne['prixt']) for ligne in lignes)
+            cur.execute("SELECT solde FROM client WHERE numero_clt = %s AND user_id = %s", 
+                        (commande['numero_table'], user_id))
+            client = cur.fetchone()
+            if not client:
+                raise Exception(f"Client {commande['numero_table']} non trouvé")
+            
+            current_solde = float(client['solde'] or '0.0')
+            new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
+            new_solde_str = f"{new_solde:.2f}"
+            
+            cur.execute("""
+                UPDATE client 
+                SET solde = %s 
+                WHERE numero_clt = %s AND user_id = %s
+            """, (new_solde_str, commande['numero_table'], user_id))
+            print(f"Solde client mis à jour: numero_clt={commande['numero_table']}, total_sale={total_sale}, new_solde={new_solde_str}")
 
         # Supprimer les lignes de attache
         cur.execute("""
@@ -1874,7 +1900,6 @@ def annuler_vente():
             cur.close()
             conn.close()
 
-# Endpoint pour annuler une réception
 @app.route('/annuler_reception', methods=['POST'])
 def annuler_reception():
     user_id = validate_user_id()
@@ -1882,11 +1907,12 @@ def annuler_reception():
         return user_id
 
     data = request.get_json()
-    if not data or 'numero_mouvement' not in data:
+    if not data or 'numero_mouvement' not in data or 'password2' not in data:
         print("Erreur: Données d'annulation réception invalides")
-        return jsonify({"error": "Numéro de mouvement manquant"}), 400
+        return jsonify({"error": "Numéro de mouvement ou mot de passe manquant"}), 400
 
     numero_mouvement = data.get('numero_mouvement')
+    password2 = data.get('password2')
 
     conn = None
     try:
@@ -1894,16 +1920,22 @@ def annuler_reception():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'existence du mouvement
+        # Vérifier l'existence du mouvement et récupérer l'utilisateur
         cur.execute("""
-            SELECT numero_four 
-            FROM mouvement 
-            WHERE numero_mouvement = %s AND user_id = %s AND nature = 'Bon de réception'
+            SELECT m.numero_four, m.numero_util, u.password2 
+            FROM mouvement m
+            JOIN utilisateur u ON m.numero_util = u.numero_util
+            WHERE m.numero_mouvement = %s AND m.user_id = %s AND m.nature = 'Bon de réception'
         """, (numero_mouvement, user_id))
         mouvement = cur.fetchone()
         if not mouvement:
             print(f"Erreur: Mouvement {numero_mouvement} non trouvé")
             return jsonify({"error": "Mouvement non trouvé"}), 404
+
+        # Vérifier le mot de passe
+        if mouvement['password2'] != password2:
+            print(f"Erreur: Mot de passe incorrect pour annuler le mouvement {numero_mouvement}")
+            return jsonify({"error": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la réception
         cur.execute("""
@@ -1917,6 +1949,9 @@ def annuler_reception():
             print(f"Erreur: Aucune ligne trouvée pour le mouvement {numero_mouvement}")
             return jsonify({"error": "Aucune ligne de réception trouvée"}), 404
 
+        # Calculer le coût total de la réception
+        total_cost = sum(float(ligne['qtea']) * float(ligne['nprix']) for ligne in lignes)
+
         # Restaurer le stock dans item
         for ligne in lignes:
             cur.execute("""
@@ -1924,6 +1959,24 @@ def annuler_reception():
                 SET qte = qte - %s 
                 WHERE numero_item = %s AND user_id = %s
             """, (ligne['qtea'], ligne['numero_item'], user_id))
+
+        # Mettre à jour le solde du fournisseur
+        cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", 
+                    (mouvement['numero_four'], user_id))
+        fournisseur = cur.fetchone()
+        if not fournisseur:
+            raise Exception(f"Fournisseur {mouvement['numero_four']} non trouvé")
+
+        current_solde = float(fournisseur['solde'] or '0.0')
+        new_solde = current_solde + total_cost  # Inverser l'effet de la réception
+        new_solde_str = f"{new_solde:.2f}"
+
+        cur.execute("""
+            UPDATE fournisseur 
+            SET solde = %s 
+            WHERE numero_fou = %s AND user_id = %s
+        """, (new_solde_str, mouvement['numero_four'], user_id))
+        print(f"Solde fournisseur mis à jour: numero_fou={mouvement['numero_four']}, total_cost={total_cost}, new_solde={new_solde_str}")
 
         # Supprimer les lignes de attache2
         cur.execute("""
