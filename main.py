@@ -2077,6 +2077,72 @@ def modifier_vente(numero_comande):
             cur.close()
             conn.close()
 
+
+@app.route('/vente/<int:numero_comande>', methods=['GET'])
+def get_vente(numero_comande):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Récupérer les détails de la commande
+        cur.execute("""
+            SELECT c.numero_comande, c.numero_table, c.date_comande, c.nature, c.numero_util,
+                   cl.nom AS client_nom, u.nom AS utilisateur_nom
+            FROM comande c
+            LEFT JOIN client cl ON c.numero_table = cl.numero_clt
+            LEFT JOIN utilisateur u ON c.numero_util = u.numero_util
+            WHERE c.numero_comande = %s AND c.user_id = %s
+        """, (numero_comande, user_id))
+        commande = cur.fetchone()
+
+        if not commande:
+            return jsonify({"error": "Commande non trouvée"}), 404
+
+        # Récupérer les lignes de la commande
+        cur.execute("""
+            SELECT a.numero_item, a.quantite, a.prixt, a.remarque, a.prixbh, i.designation
+            FROM attache a
+            JOIN item i ON a.numero_item = i.numero_item
+            WHERE a.numero_comande = %s AND a.user_id = %s
+        """, (numero_comande, user_id))
+        lignes = cur.fetchall()
+
+        # Formater la réponse
+        response = {
+            'numero_comande': commande['numero_comande'],
+            'numero_table': commande['numero_table'],
+            'date_comande': commande['date_comande'].isoformat(),
+            'nature': commande['nature'],
+            'client_nom': commande['client_nom'] or 'Comptoir',
+            'utilisateur_nom': commande['utilisateur_nom'] or 'N/A',
+            'lignes': [
+                {
+                    'numero_item': ligne['numero_item'],
+                    'designation': ligne['designation'],
+                    'quantite': ligne['quantite'],
+                    'prixt': str(ligne['prixt']),
+                    'remarque': ligne['remarque'] or '',
+                    'prixbh': str(ligne['prixbh'])
+                }
+                for ligne in lignes
+            ]
+        }
+
+        cur.close()
+        conn.close()
+        return jsonify(response), 200
+
+    except Exception as e:
+        if conn:
+            cur.close()
+            conn.close()
+        print(f"Erreur récupération vente: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
