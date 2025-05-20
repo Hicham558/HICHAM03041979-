@@ -2004,6 +2004,78 @@ def annuler_reception():
             cur.close()
             conn.close()
 
+@app.route('/modifier_vente/<int:numero_comande>', methods=['PUT'])
+def modifier_vente(numero_comande):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    data = request.get_json()
+    if not data or 'lignes' not in data or not data['lignes'] or 'numero_util' not in data or 'password2' not in data:
+        return jsonify({"error": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
+
+    numero_table = data.get('numero_table', 0)
+    date_comande = data.get('date_comande', datetime.utcnow().isoformat())
+    lignes = data['lignes']
+    numero_util = data['numero_util']
+    password2 = data['password2']
+    nature = "TICKET" if numero_table == 0 else "BON DE L."
+
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier l'utilisateur et le mot de passe
+        cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
+        utilisateur = cur.fetchone()
+        if not utilisateur or utilisateur['password2'] != password2:
+            return jsonify({"error": "Utilisateur ou mot de passe incorrect"}), 401
+
+        # Vérifier l'existence de la commande
+        cur.execute("SELECT * FROM comande WHERE numero_comande = %s AND user_id = %s", (numero_comande, user_id))
+        if not cur.fetchone():
+            return jsonify({"error": "Commande non trouvée"}), 404
+
+        # Restaurer le stock des anciens articles
+        cur.execute("SELECT numero_item, quantite FROM attache WHERE numero_comande = %s AND user_id = %s", (numero_comande, user_id))
+        old_lignes = cur.fetchall()
+        for ligne in old_lignes:
+            cur.execute("UPDATE item SET qte = qte + %s WHERE numero_item = %s AND user_id = %s",
+                        (ligne['quantite'], ligne['numero_item'], user_id))
+
+        # Supprimer les anciennes lignes
+        cur.execute("DELETE FROM attache WHERE numero_comande = %s AND user_id = %s", (numero_comande, user_id))
+
+        # Mettre à jour la commande (sans toucher au solde)
+        cur.execute("""
+            UPDATE comande 
+            SET numero_table = %s, date_comande = %s, nature = %s, numero_util = %s
+            WHERE numero_comande = %s AND user_id = %s
+        """, (numero_table, date_comande, nature, numero_util, numero_comande, user_id))
+
+        # Insérer les nouvelles lignes et ajuster le stock
+        for ligne in lignes:
+            cur.execute("""
+                INSERT INTO attache (user_id, numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, numero_comande, ligne.get('numero_item'), ligne.get('quantite'), ligne.get('prixt'),
+                  ligne.get('remarque', ''), ligne.get('prixbh', '0.00'), 0))
+            cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s AND user_id = %s",
+                        (ligne.get('quantite'), ligne.get('numero_item'), user_id))
+
+        conn.commit()
+        return jsonify({"numero_comande": numero_comande, "statut": "Vente modifiée"}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 
 # Lancer l'application
 if __name__ == '__main__':
