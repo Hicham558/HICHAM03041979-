@@ -2142,30 +2142,6 @@ def get_vente(numero_comande):
             conn.close()
         print(f"Erreur récupération vente: {str(e)}")
         return jsonify({"error": str(e)}), 500
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import psycopg2
-import os
-from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
-
-app = Flask(__name__)
-CORS(app, origins=["https://hicham558.github.io", "https://firepoz-s7tl.vercel.app"])
-app.debug = True
-
-def get_conn():
-    url = os.environ['DATABASE_URL']
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(url, sslmode='require')
-
-def validate_user_id():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    return user_id
-
-# [Les routes existantes sont inchangées, elles sont omises pour brevité]
 
 @app.route('/reception/<int:numero_mouvement>', methods=['GET'])
 def get_reception(numero_mouvement):
