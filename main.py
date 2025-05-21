@@ -2208,6 +2208,8 @@ def get_reception(numero_mouvement):
         print(f"Erreur récupération réception: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
+
 @app.route('/modifier_reception/<int:numero_mouvement>', methods=['PUT'])
 def modifier_reception(numero_mouvement):
     user_id = validate_user_id()
@@ -2255,29 +2257,35 @@ def modifier_reception(numero_mouvement):
             print(f"Erreur: Réception {numero_mouvement} non trouvée")
             return jsonify({"error": "Réception non trouvée"}), 404
 
-        # Calculer le coût total de la réception précédente (pour annuler son effet)
+        # Récupérer les lignes précédentes de la réception (quantités et prix)
         cur.execute("""
-            SELECT SUM(CAST(a.qtea AS FLOAT) * CAST(a.nprix AS FLOAT)) AS total_cost
-            FROM attache2 a
-            WHERE a.numero_mouvement = %s AND a.user_id = %s
+            SELECT numero_item, qtea, nprix
+            FROM attache2
+            WHERE numero_mouvement = %s AND user_id = %s
         """, (numero_mouvement, user_id))
-        old_total_cost = cur.fetchone()['total_cost'] or 0.0
+        old_lines = cur.fetchall()
+        old_lines_dict = {line['numero_item']: line for line in old_lines}
+        old_total_cost = sum(float(line['qtea']) * float(line['nprix']) for line in old_lines)
         print(f"Coût total réception précédente: {old_total_cost}")
 
         # Restaurer le solde initial (annuler l'effet de la réception précédente)
         current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
-        restored_solde = current_solde + old_total_cost  # Ajouter car la réception avait soustrait
+        restored_solde = current_solde + old_total_cost
         print(f"Solde restauré: {restored_solde}")
 
-        # Calculer le nouveau coût total
+        # Calculer le nouveau coût total et préparer les mises à jour du stock
         new_total_cost = 0.0
+        stock_updates = {}  # {numero_item: {old_qtea, new_qtea, prixbh}}
+
         for ligne in lignes:
             numero_item = ligne.get('numero_item')
-            qtea = float(ligne.get('qtea', 0))
+            new_qtea = float(ligne.get('qtea', 0))
             prixbh = float(ligne.get('prixbh', 0))
 
-            if qtea <= 0:
-                raise Exception("La quantité ajoutée doit être positive")
+            if new_qtea < 0:
+                raise Exception("La quantité ajoutée ne peut pas être négative")
+            if prixbh < 0:
+                raise Exception("Le prix d'achat ne peut pas être négatif")
 
             # Vérifier l'article
             cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
@@ -2286,9 +2294,31 @@ def modifier_reception(numero_mouvement):
                 raise Exception(f"Article {numero_item} non trouvé")
 
             current_qte = float(item['qte'] or 0)
-            prixba = float(item['prixba'] or 0)
-            nqte = current_qte + qtea
-            new_total_cost += qtea * prixbh
+            old_qtea = float(old_lines_dict.get(numero_item, {}).get('qtea', 0))
+
+            # Calculer le coût de la ligne
+            new_total_cost += new_qtea * prixbh
+
+            # Stocker les informations pour la mise à jour du stock
+            stock_updates[numero_item] = {
+                'old_qtea': old_qtea,
+                'new_qtea': new_qtea,
+                'prixbh': prixbh,
+                'current_qte': current_qte
+            }
+
+        # Traiter les articles supprimés (présents dans old_lines mais absents dans lignes)
+        for numero_item, old_line in old_lines_dict.items():
+            if numero_item not in stock_updates:
+                stock_updates[numero_item] = {
+                    'old_qtea': float(old_line['qtea']),
+                    'new_qtea': 0,
+                    'prixbh': 0,
+                    'current_qte': float(cur.execute(
+                        "SELECT qte FROM item WHERE numero_item = %s AND user_id = %s", 
+                        (numero_item, user_id)
+                    ).fetchone()['qte'] or 0)
+                }
 
         # Mettre à jour le solde du fournisseur
         new_solde = restored_solde - new_total_cost
@@ -2300,27 +2330,33 @@ def modifier_reception(numero_mouvement):
         # Supprimer les anciennes lignes de la réception
         cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s AND user_id = %s", (numero_mouvement, user_id))
 
-        # Insérer les nouvelles lignes
-        for ligne in lignes:
-            numero_item = ligne.get('numero_item')
-            qtea = float(ligne.get('qtea', 0))
-            prixbh = float(ligne.get('prixbh', 0))
+        # Insérer les nouvelles lignes et mettre à jour le stock
+        for numero_item, update_info in stock_updates.items():
+            old_qtea = update_info['old_qtea']
+            new_qtea = update_info['new_qtea']
+            prixbh = update_info['prixbh']
+            current_qte = update_info['current_qte']
 
-            cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
-            item = cur.fetchone()
-            current_qte = float(item['qte'] or 0)
-            prixba = float(item['prixba'] or 0)
-            nqte = current_qte + qtea
+            # Restaurer le stock initial (annuler l'ancienne quantité)
+            restored_qte = current_qte - old_qtea
+            # Appliquer la nouvelle quantité
+            new_qte = restored_qte + new_qtea
 
-            # Insérer dans attache2
-            cur.execute("""
-                INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (numero_item, numero_mouvement, qtea, nqte, str(prixbh)[:30], str(prixba)[:30], True, user_id))
+            if new_qte < 0:
+                raise Exception(f"Stock négatif pour l'article {numero_item}: {new_qte}")
+
+            # Si l'article est dans les nouvelles lignes, insérer dans attache2
+            if new_qtea > 0:
+                cur.execute("""
+                    INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send, user_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (numero_item, numero_mouvement, new_qtea, new_qte, str(prixbh)[:30], str(prixbh)[:30], True, user_id))
 
             # Mettre à jour le stock et le prix d'achat
             cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s", 
-                        (nqte, str(prixbh), numero_item, user_id))
+                        (new_qte, str(prixbh)[:30] if new_qtea > 0 else str(update_info.get('current_prixba', 0)), 
+                         numero_item, user_id))
+            print(f"Stock mis à jour: numero_item={numero_item}, old_qtea={old_qtea}, new_qtea={new_qtea}, new_qte={new_qte}")
 
         # Mettre à jour le mouvement
         cur.execute("""
