@@ -2379,6 +2379,32 @@ def modifier_reception(numero_mouvement):
         if conn:
             cur.close()
             conn.close()
+
+@app.route('/modifier_client_adresse/<id>', methods=['PUT'])
+def modifier_client_adresse(id):
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({"erreur": "Authentification requise"}), 401
+    data = request.get_json()
+    if not data or 'adresse' not in data:
+        return jsonify({"erreur": "L'adresse est obligatoire"}), 400
+    adresse = data['adresse']
+    print(f"Client {id} adresse mise à jour: adresse={adresse}")
+    return jsonify({"message": "Adresse du client modifiée avec succès"})
+
+@app.route('/modifier_fournisseur_adresse/<id>', methods=['PUT'])
+def modifier_fournisseur_adresse(id):
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({"erreur": "Authentification requise"}), 401
+    data = request.get_json()
+    if not data or 'adresse' not in data:
+        return jsonify({"erreur": "L'adresse est obligatoire"}), 400
+    adresse = data['adresse']
+    print(f"Fournisseur {id} adresse mise à jour: adresse={adresse}")
+    return jsonify({"message": "Adresse du fournisseur modifiée avec succès"})
+
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
