@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import requests
 import psycopg2
 import os
 from psycopg2.extras import RealDictCursor
@@ -2379,6 +2380,105 @@ def modifier_reception(numero_mouvement):
         if conn:
             cur.close()
             conn.close()
+
+
+
+
+
+# Endpoint pour les questions IA
+@app.route('/ask_ia', methods=['POST'])
+def ask_ia():
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Erreur 401 si user_id invalide
+
+    data = request.get_json()
+    if not data or 'question' not in data:
+        return jsonify({"error": "Question manquante"}), 400
+
+    question = data['question'].lower()
+    try:
+        # Simulation d'une IA (remplacer par appel à une vraie API IA)
+        response_text = process_ia_question(question, user_id)
+        return jsonify({"response": response_text}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+def process_ia_question(question, user_id):
+    # Ici, tu appellerais une API IA comme Grok 3
+    # Exemple fictif avec xAI API (remplacer par ton token et URL)
+    """
+    ia_response = requests.post(
+        'https://api.x.ai/grok3',
+        headers={'Authorization': 'Bearer your-api-key'},
+        json={'query': question, 'context': 'FirePoz business data'}
+    ).json()
+    intent = ia_response.get('intent')  # Ex. : {'entity': 'client', 'action': 'get_solde', 'params': {'name': 'Hicham'}}
+    """
+
+    # Simulation d'analyse d'intention (à remplacer par IA réelle)
+    words = question.split()
+    potential_name = next((w for w in words if w not in ['client', 'solde', 'produit', 'vente', 'liste', 'stock', 'faible', 'est', 'quel', 'quels', 'qui', 'de', 'le', 'la', 'les', 'un', 'une']), None)
+
+    if 'client' in question and 'solde' in question and potential_name:
+        # Requête à /liste_clients pour trouver le client
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numero_clt, nom FROM client WHERE user_id = %s AND LOWER(nom) LIKE %s", (user_id, f'%{potential_name}%'))
+        client = cur.fetchone()
+        if not client:
+            cur.close()
+            conn.close()
+            return f"Aucun client nommé '{potential_name}' trouvé."
+        
+        # Requête à /client_solde
+        cur.execute("SELECT COALESCE(solde, '0.00') as solde FROM client WHERE numero_clt = %s", (client['numero_clt'],))
+        solde = cur.fetchone()['solde']
+        cur.close()
+        conn.close()
+        return f"Le solde du client {client['nom']} est de {solde} MAD."
+
+    elif 'client' in question and ('liste' in question or 'tous' in question):
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT nom, reference, solde FROM client WHERE user_id = %s ORDER BY nom", (user_id,))
+        clients = cur.fetchall()
+        cur.close()
+        conn.close()
+        if not clients:
+            return "Aucun client trouvé."
+        return "Liste des clients :\n" + "\n".join([f"- {c['nom']} (Référence: {c['reference']}, Solde: {c['solde']} MAD)" for c in clients])
+
+    elif 'produit' in question and 'faible' in question and 'stock' in question:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT designation, qte FROM item WHERE user_id = %s AND qte < 10 ORDER BY designation", (user_id,))
+        produits = cur.fetchall()
+        cur.close()
+        conn.close()
+        if not produits:
+            return "Aucun produit en faible stock."
+        return "Produits en faible stock :\n" + "\n".join([f"- {p['designation']} (Quantité: {p['qte']})" for p in produits])
+
+    else:
+        return "Désolé, je ne comprends pas votre question. Essayez : 'Quel est le solde du client Hicham ?', 'Liste tous les clients', ou 'Quels produits sont en faible stock ?'."
+
+# Intégration avec une vraie API IA (exemple avec Grok 3)
+def call_grok_api(question):
+    # Exemple fictif (remplacer par l'API réelle)
+    try:
+        response = requests.post(
+            'https://api.x.ai/grok3',  # URL fictive
+            headers={'Authorization': 'Bearer your-api-key'},
+            json={'query': question, 'context': 'FirePoz business data management'}
+        )
+        if response.status_code == 200:
+            return response.json().get('response', 'Erreur de l\'IA')
+        else:
+            return f"Erreur API IA : {response.status_code}"
+    except Exception as e:
+        return f"Erreur connexion IA : {str(e)}"
+
 
 # Lancer l'application
 if __name__ == '__main__':
