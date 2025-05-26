@@ -357,6 +357,26 @@ def modifier_item(numero_item):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+def calculate_ean13_check_digit(code12):
+    """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
+    # Convertir en liste de chiffres
+    digits = [int(d) for d in code12]
+    
+    # Somme des chiffres aux positions impaires (0-based: 0, 2, 4, 6, 8, 10)
+    odd_sum = sum(digits[0::2])
+    # Somme des chiffres aux positions paires (0-based: 1, 3, 5, 7, 9, 11)
+    even_sum = sum(digits[1::2])
+    
+    # Multiplier la somme des positions impaires par 3 et ajouter la somme des paires
+    total = odd_sum * 3 + even_sum
+    
+    # Trouver le multiple de 10 supérieur le plus proche
+    next_multiple_of_10 = (total + 9) // 10 * 10
+    
+    # Calculer le chiffre de contrôle
+    check_digit = next_multiple_of_10 - total
+    return check_digit
+
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
     user_id = validate_user_id()
@@ -370,8 +390,8 @@ def ajouter_item():
     qte = data.get('qte')
     prixba = data.get('prixba')
 
-    if not all([designation, bar, prix is not None, qte is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
+    if not all([designation, prix is not None, qte is not None]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (designation, prix, qte)'}), 400
 
     try:
         prix = float(prix)
@@ -385,29 +405,54 @@ def ajouter_item():
         # Verrouiller pour éviter les conflits sur ref
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Vérifier l'unicité de bar
-        cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
-        if cur.fetchone():
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
+        # Si bar est fourni, vérifier son unicité
+        if bar:
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
 
         # Générer ref
         cur.execute("SELECT COUNT(*) FROM item")
         count = cur.fetchone()[0]
         ref = f"P{count + 1}"
 
-        # Insérer le produit
+        # Insérer le produit (utiliser une valeur temporaire pour bar si vide)
+        temp_bar = bar if bar else 'TEMP_BAR'  # Valeur temporaire si bar est vide
         cur.execute(
             "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
-            (designation, bar, prix, qte, prixba or '0.00', ref, user_id)
+            (designation, temp_bar, prix, qte, prixba or '0.00', ref, user_id)
         )
         item_id = cur.fetchone()[0]
+
+        # Si bar est vide, générer un code EAN-13 basé sur numero_item
+        if not bar:
+            # Créer un code de 12 chiffres basé sur numero_item
+            code12 = f"1{item_id:011d}"  # Ex. numero_item=1 -> "100000000001"
+            check_digit = calculate_ean13_check_digit(code12)
+            bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
+            
+            # Vérifier l'unicité du code EAN-13 généré
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, item_id))
+            if cur.fetchone():
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà'}), 409
+
+            # Mettre à jour l'enregistrement avec le code EAN-13
+            cur.execute(
+                "UPDATE item SET bar = %s WHERE numero_item = %s AND user_id = %s",
+                (bar, item_id, user_id)
+            )
+
         conn.commit()
         cur.close()
         conn.close()
-        return jsonify({'statut': 'Item ajouté', 'id': item_id, 'ref': ref}), 201
+        return jsonify({'statut': 'Item ajouté', 'id': item_id, 'ref': ref, 'bar': bar}), 201
     except ValueError:
+        conn.rollback()
         return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
         if conn:
