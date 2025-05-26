@@ -404,12 +404,28 @@ def ajouter_item():
                 conn.close()
                 return jsonify({'erreur': 'Ce code-barres existe déjà pour cet utilisateur'}), 409
 
-        # Compter les items existants pour cet user_id
-        cur.execute("SELECT COUNT(*) AS count FROM item WHERE user_id = %s", (user_id,))
-        user_item_count = cur.fetchone()['count']
+        # Trouver le prochain numéro disponible pour ref et bar
+        cur.execute("SELECT ref, bar FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
+        existing_items = cur.fetchall()
+        used_numbers = []
+        for item in existing_items:
+            # Extraire le numéro de ref (ex. P3 → 3)
+            ref_num = int(item['ref'][1:]) if item['ref'].startswith('P') and item['ref'][1:].isdigit() else 0
+            # Extraire le numéro de bar (ex. 100000000003X → 3)
+            bar_num = int(item['bar'][1:12]) if item['bar'].startswith('1') and len(item['bar']) == 13 and item['bar'][1:12].isdigit() else 0
+            used_numbers.append(max(ref_num, bar_num))
 
-        # Générer ref (P1, P2, etc. pour cet user_id)
-        ref = f"P{user_item_count + 1}"
+        # Trouver le plus petit numéro non utilisé à partir de 1
+        next_number = 1
+        used_numbers = sorted(set(used_numbers))
+        for num in used_numbers:
+            if num == next_number:
+                next_number += 1
+            elif num > next_number:
+                break
+
+        # Générer ref
+        ref = f"P{next_number}"
 
         # Insérer le produit (utiliser une valeur temporaire pour bar si vide)
         temp_bar = bar if bar else 'TEMP_BAR'
@@ -420,14 +436,14 @@ def ajouter_item():
         )
         item_id = cur.fetchone()['numero_item']
 
-        # Si bar est vide, générer un code EAN-13 basé sur le compteur user_item_count
+        # Si bar est vide, générer un code EAN-13 basé sur next_number
         if not bar:
-            # Créer un code de 12 chiffres (1 suivi de user_item_count + 1 formaté sur 11 chiffres)
-            code12 = f"1{user_item_count + 1:011d}"  # Ex. user_item_count=0 → "100000000001"
+            # Créer un code de 12 chiffres
+            code12 = f"1{next_number:011d}"  # Ex. next_number=1 → "100000000001"
             check_digit = calculate_ean13_check_digit(code12)
             bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
 
-            # Vérifier l'unicité du code EAN-13 généré pour cet user_id
+            # Vérifier l'unicité du code EAN-13 généré
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", 
                        (bar, user_id, item_id))
             if cur.fetchone():
