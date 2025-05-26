@@ -357,23 +357,14 @@ def modifier_item(numero_item):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+# Calcul du chiffre de contrôle EAN-13
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
-    # Convertir en liste de chiffres
     digits = [int(d) for d in code12]
-    
-    # Somme des chiffres aux positions impaires (0-based: 0, 2, 4, 6, 8, 10)
     odd_sum = sum(digits[0::2])
-    # Somme des chiffres aux positions paires (0-based: 1, 3, 5, 7, 9, 11)
     even_sum = sum(digits[1::2])
-    
-    # Multiplier la somme des positions impaires par 3 et ajouter la somme des paires
     total = odd_sum * 3 + even_sum
-    
-    # Trouver le multiple de 10 supérieur le plus proche
     next_multiple_of_10 = (total + 9) // 10 * 10
-    
-    # Calculer le chiffre de contrôle
     check_digit = next_multiple_of_10 - total
     return check_digit
 
@@ -401,45 +392,49 @@ def ajouter_item():
 
         conn = get_conn()
         conn.autocommit = False
-        cur = conn.cursor()
-        # Verrouiller pour éviter les conflits sur ref
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Verrouiller pour éviter les conflits
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Si bar est fourni, vérifier son unicité
+        # Si bar est fourni, vérifier son unicité pour ce user_id
         if bar:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
             if cur.fetchone():
                 cur.close()
                 conn.close()
-                return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
+                return jsonify({'erreur': 'Ce code-barres existe déjà pour cet utilisateur'}), 409
 
-        # Générer ref
-        cur.execute("SELECT COUNT(*) FROM item")
-        count = cur.fetchone()[0]
-        ref = f"P{count + 1}"
+        # Compter les items existants pour cet user_id
+        cur.execute("SELECT COUNT(*) AS count FROM item WHERE user_id = %s", (user_id,))
+        user_item_count = cur.fetchone()['count']
+
+        # Générer ref (P1, P2, etc. pour cet user_id)
+        ref = f"P{user_item_count + 1}"
 
         # Insérer le produit (utiliser une valeur temporaire pour bar si vide)
-        temp_bar = bar if bar else 'TEMP_BAR'  # Valeur temporaire si bar est vide
+        temp_bar = bar if bar else 'TEMP_BAR'
         cur.execute(
-            "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
+            "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
             (designation, temp_bar, prix, qte, prixba or '0.00', ref, user_id)
         )
-        item_id = cur.fetchone()[0]
+        item_id = cur.fetchone()['numero_item']
 
-        # Si bar est vide, générer un code EAN-13 basé sur numero_item
+        # Si bar est vide, générer un code EAN-13 basé sur le compteur user_item_count
         if not bar:
-            # Créer un code de 12 chiffres basé sur numero_item
-            code12 = f"1{item_id:011d}"  # Ex. numero_item=1 -> "100000000001"
+            # Créer un code de 12 chiffres (1 suivi de user_item_count + 1 formaté sur 11 chiffres)
+            code12 = f"1{user_item_count + 1:011d}"  # Ex. user_item_count=0 → "100000000001"
             check_digit = calculate_ean13_check_digit(code12)
             bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
-            
-            # Vérifier l'unicité du code EAN-13 généré
-            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, item_id))
+
+            # Vérifier l'unicité du code EAN-13 généré pour cet user_id
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", 
+                       (bar, user_id, item_id))
             if cur.fetchone():
                 conn.rollback()
                 cur.close()
                 conn.close()
-                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà'}), 409
+                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
 
             # Mettre à jour l'enregistrement avec le code EAN-13
             cur.execute(
