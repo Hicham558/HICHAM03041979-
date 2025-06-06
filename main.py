@@ -277,6 +277,7 @@ def supprimer_fournisseur(numero_fou):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
