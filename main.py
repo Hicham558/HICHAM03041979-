@@ -5,6 +5,7 @@ import os
 from psycopg2.extras import RealDictCursor
 from datetime import datetime,timedelta
 
+
 app = Flask(__name__)
 CORS(app, origins=["https://hicham558.github.io","https://firepoz-s7tl.vercel.app"])  # Autoriser les requêtes depuis ton front-end
 app.debug = True  # Activer le mode debug pour voir les erreurs
