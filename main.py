@@ -98,6 +98,7 @@ def ajouter_client():
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+
 @app.route('/modifier_client/<numero_clt>', methods=['PUT'])
 def modifier_client(numero_clt):
     user_id = validate_user_id()
