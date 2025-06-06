@@ -131,6 +131,7 @@ def modifier_client(numero_clt):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+
 # --- Suppression Client ---
 @app.route('/supprimer_client/<numero_clt>', methods=['DELETE'])
 def supprimer_client(numero_clt):
