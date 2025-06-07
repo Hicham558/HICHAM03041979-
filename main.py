@@ -324,19 +324,28 @@ def modifier_item(numero_item):
     prix = data.get('prix')
     qte = data.get('qte')
     prixba = data.get('prixba')
+    numero_categorie = data.get('numero_categorie')
 
-    if not all([designation, bar, prix is not None, qte is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
+    if not all([designation, bar, prix is not None, qte is not None, numero_categorie]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte, numero_categorie)'}), 400
 
     try:
         prix = float(prix)
         qte = int(qte)
+        numero_categorie = int(numero_categorie)
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
         conn = get_conn()
         cur = conn.cursor()
-        # Vérifier l'unicité de bar (sauf pour cet item)
+
+        # Verify category exists
+        cur.execute("SELECT 1 FROM categorie WHERE numer_categorie = %s AND user_id = %s", (numero_categorie, user_id))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+
         cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, numero_item))
         if cur.fetchone():
             cur.close()
@@ -344,8 +353,8 @@ def modifier_item(numero_item):
             return jsonify({'erreur': 'Ce code-barres est déjà utilisé'}), 409
 
         cur.execute(
-            "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_item",
-            (designation, bar, prix, qte, prixba or '0.00', numero_item, user_id)
+            "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s, numero_categorie = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_item",
+            (designation, bar, prix, qte, prixba or '0.00', numero_categorie, numero_item, user_id)
         )
         if cur.rowcount == 0:
             cur.close()
@@ -357,10 +366,9 @@ def modifier_item(numero_item):
         conn.close()
         return jsonify({'statut': 'Produit modifié'}), 200
     except ValueError:
-        return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
+        return jsonify({'erreur': 'Le prix, la quantité et la catégorie doivent être des nombres valides'}), 400
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
-
 # Calcul du chiffre de contrôle EAN-13
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
@@ -371,6 +379,7 @@ def calculate_ean13_check_digit(code12):
     next_multiple_of_10 = (total + 9) // 10 * 10
     check_digit = next_multiple_of_10 - total
     return check_digit
+
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
@@ -384,23 +393,30 @@ def ajouter_item():
     prix = data.get('prix')
     qte = data.get('qte')
     prixba = data.get('prixba')
+    numero_categorie = data.get('numero_categorie')
 
-    if not all([designation, prix is not None, qte is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (designation, prix, qte)'}), 400
+    if not all([designation, prix is not None, qte is not None, numero_categorie]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (designation, prix, qte, numero_categorie)'}), 400
 
     try:
         prix = float(prix)
         qte = int(qte)
+        numero_categorie = int(numero_categorie)
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
         conn = get_conn()
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        # Verrouiller pour éviter les conflits
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Si bar est fourni, vérifier son unicité pour ce user_id
+        # Verify category exists
+        cur.execute("SELECT 1 FROM categorie WHERE numer_categorie = %s AND user_id = %s", (numero_categorie, user_id))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+
         if bar:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
             if cur.fetchone():
@@ -408,18 +424,14 @@ def ajouter_item():
                 conn.close()
                 return jsonify({'erreur': 'Ce code-barres existe déjà pour cet utilisateur'}), 409
 
-        # Trouver le prochain numéro disponible pour ref et bar
         cur.execute("SELECT ref, bar FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
         existing_items = cur.fetchall()
         used_numbers = []
         for item in existing_items:
-            # Extraire le numéro de ref (ex. P3 → 3)
             ref_num = int(item['ref'][1:]) if item['ref'].startswith('P') and item['ref'][1:].isdigit() else 0
-            # Extraire le numéro de bar (ex. 100000000003X → 3)
             bar_num = int(item['bar'][1:12]) if item['bar'].startswith('1') and len(item['bar']) == 13 and item['bar'][1:12].isdigit() else 0
             used_numbers.append(max(ref_num, bar_num))
 
-        # Trouver le plus petit numéro non utilisé à partir de 1
         next_number = 1
         used_numbers = sorted(set(used_numbers))
         for num in used_numbers:
@@ -428,26 +440,20 @@ def ajouter_item():
             elif num > next_number:
                 break
 
-        # Générer ref
         ref = f"P{next_number}"
-
-        # Insérer le produit (utiliser une valeur temporaire pour bar si vide)
         temp_bar = bar if bar else 'TEMP_BAR'
         cur.execute(
-            "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
-            (designation, temp_bar, prix, qte, prixba or '0.00', ref, user_id)
+            "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id, numero_categorie) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING numero_item",
+            (designation, temp_bar, prix, qte, prixba or '0.00', ref, user_id, numero_categorie)
         )
         item_id = cur.fetchone()['numero_item']
 
-        # Si bar est vide, générer un code EAN-13 basé sur next_number
         if not bar:
-            # Créer un code de 12 chiffres
-            code12 = f"1{next_number:011d}"  # Ex. next_number=1 → "100000000001"
+            code12 = f"1{next_number:011d}"
             check_digit = calculate_ean13_check_digit(code12)
-            bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
+            bar = f"{code12}{check_digit}"
 
-            # Vérifier l'unicité du code EAN-13 généré
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", 
                        (bar, user_id, item_id))
             if cur.fetchone():
@@ -456,7 +462,6 @@ def ajouter_item():
                 conn.close()
                 return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
 
-            # Mettre à jour l'enregistrement avec le code EAN-13
             cur.execute(
                 "UPDATE item SET bar = %s WHERE numero_item = %s AND user_id = %s",
                 (bar, item_id, user_id)
@@ -468,7 +473,7 @@ def ajouter_item():
         return jsonify({'statut': 'Item ajouté', 'id': item_id, 'ref': ref, 'bar': bar}), 201
     except ValueError:
         conn.rollback()
-        return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
+        return jsonify({'erreur': 'Le prix, la quantité et la catégorie doivent être des nombres valides'}), 400
     except Exception as e:
         if conn:
             conn.rollback()
