@@ -2547,22 +2547,24 @@ def assigner_categorie():
 
     data = request.get_json()
     numero_item = data.get('numero_item')
-    numero_categorie = data.get('numero_categorie')  # Can be null to unassign
+    numero_categorie = data.get('numero_categorie')
 
     if not numero_item:
         return jsonify({'erreur': 'Numéro d\'article requis'}), 400
 
     try:
+        numero_item = int(numero_item)
+        numero_categorie = int(numero_categorie) if numero_categorie else None
+        logger.debug(f"Assigning item {numero_item} to category {numero_categorie} for user {user_id}")
+
         conn = get_conn()
         cur = conn.cursor()
-        # Verify item exists
         cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
         if not cur.fetchone():
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Article non trouvé'}), 404
 
-        # Verify category exists if provided
         if numero_categorie:
             cur.execute("SELECT 1 FROM categorie WHERE numer_categorie = %s AND user_id = %s", (numero_categorie, user_id))
             if not cur.fetchone():
@@ -2570,16 +2572,21 @@ def assigner_categorie():
                 conn.close()
                 return jsonify({'erreur': 'Catégorie non trouvée'}), 404
 
-        # Update item category
         cur.execute(
             "UPDATE item SET numero_categorie = %s WHERE numero_item = %s AND user_id = %s",
             (numero_categorie, numero_item, user_id)
         )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Aucun article mis à jour'}), 404
+
         conn.commit()
         cur.close()
         conn.close()
         return jsonify({'statut': 'Catégorie assignée'}), 200
     except Exception as e:
+        logger.error(f"Erreur dans assigner_categorie: {str(e)}")
         if conn:
             conn.rollback()
             conn.close()
