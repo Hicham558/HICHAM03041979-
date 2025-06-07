@@ -2439,7 +2439,105 @@ def modifier_reception(numero_mouvement):
         if conn:
             cur.close()
             conn.close()
+# --- Categories ---
+@app.route('/liste_categories', methods=['GET'])
+def liste_categories():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numer_categorie, description_c FROM categorie WHERE user_id = %s ORDER BY description_c", (user_id,))
+        categories = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify(categories), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_categorie', methods=['POST'])
+def ajouter_categorie():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    description_c = data.get('description_c')
+    if not description_c:
+        return jsonify({'erreur': 'Description requise'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO categorie (description_c, user_id) VALUES (%s, %s) RETURNING numer_categorie",
+            (description_c, user_id)
+        )
+        category_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie ajoutée', 'id': category_id}), 201
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_categorie/<int:numer_categorie>', methods=['PUT'])
+def modifier_categorie(numer_categorie):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    description_c = data.get('description_c')
+    if not description_c:
+        return jsonify({'erreur': 'Description requise'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE categorie SET description_c = %s WHERE numer_categorie = %s AND user_id = %s RETURNING numer_categorie",
+            (description_c, numer_categorie, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie modifiée'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/supprimer_categorie/<int:numer_categorie>', methods=['DELETE'])
+def supprimer_categorie(numer_categorie):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Check if category is used by any item
+        cur.execute("SELECT 1 FROM item WHERE numero_categorie = %s AND user_id = %s", (numer_categorie, user_id))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie utilisée par des produits'}), 400
+        cur.execute("DELETE FROM categorie WHERE numer_categorie = %s AND user_id = %s", (numer_categorie, user_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie supprimée'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
