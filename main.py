@@ -2541,22 +2541,22 @@ def supprimer_categorie(numer_categorie):
 
 @app.route('/assigner_categorie', methods=['POST'])
 def assigner_categorie():
-    # Validate user_id
+    # Valider user_id
     user_id = validate_user_id()
     if isinstance(user_id, tuple):
         logger.error(f"Échec validation user_id: {user_id[0].get('erreur')}")
         return user_id
 
-    # Parse request data
+    # Parser les données de la requête
     data = request.get_json()
     if not data:
         logger.error("Données JSON manquantes dans la requête")
         return jsonify({'erreur': 'Données JSON requises'}), 400
 
     numero_item = data.get('numero_item')
-    numero_categorie = data.get('numero_categorie')  # Can be null to unassign
+    numero_categorie = data.get('numer_categorie')  # Peut être null pour désassigner
 
-    # Validate input
+    # Valider les entrées
     if numero_item is None:
         logger.error("numero_item manquant dans la requête")
         return jsonify({'erreur': 'Numéro d\'article requis'}), 400
@@ -2581,7 +2581,7 @@ def assigner_categorie():
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Verify item exists
+        # Vérifier que l'article existe
         cur.execute(
             "SELECT numero_item, designation FROM item WHERE numero_item = %s AND user_id = %s",
             (numero_item, user_id)
@@ -2595,7 +2595,7 @@ def assigner_categorie():
 
         logger.debug(f"Article trouvé: {item['designation']} (ID: {item['numero_item']})")
 
-        # Verify category exists if provided
+        # Vérifier que la catégorie existe si fournie
         if numero_categorie is not None:
             cur.execute(
                 "SELECT numer_categorie, description_c FROM categorie WHERE numer_categorie = %s AND user_id = %s",
@@ -2609,7 +2609,7 @@ def assigner_categorie():
                 return jsonify({'erreur': f'Catégorie {numero_categorie} non trouvée pour cet utilisateur'}), 404
             logger.debug(f"Catégorie trouvée: {category['description_c']} (ID: {category['numer_categorie']})")
 
-        # Perform update
+        # Effectuer la mise à jour
         cur.execute(
             "UPDATE item SET numero_categorie = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_categorie",
             (numero_categorie, numero_item, user_id)
@@ -2629,13 +2629,14 @@ def assigner_categorie():
         return jsonify({
             'statut': 'Catégorie assignée',
             'numero_item': numero_item,
-            'numero_categorie': numero_categorie
+            'numer_categorie': numero_categorie
         }), 200
 
     except Exception as e:
         logger.error(f"Erreur dans assigner_categorie: {str(e)}", exc_info=True)
         if conn:
             conn.rollback()
+            cur.close()
             conn.close()
         return jsonify({'erreur': f'Erreur serveur: {str(e)}'}), 500
 @app.route('/liste_produits_par_categorie', methods=['GET'])
