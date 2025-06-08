@@ -2638,6 +2638,42 @@ def assigner_categorie():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': f'Erreur serveur: {str(e)}'}), 500
+@app.route('/liste_produits_par_categorie', methods=['GET'])
+def liste_produits_par_categorie():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+    numero_categorie = request.args.get('numero_categorie', type=int)
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if numero_categorie is None:
+            cur.execute("SELECT numero_item, designation FROM item WHERE numero_categorie IS NULL AND user_id = %s", (user_id,))
+            produits = cur.fetchall()
+            cur.close()
+            conn.close()
+            return jsonify({'produits': produits}), 200
+        else:
+            cur.execute("""
+                SELECT c.numero_categorie, c.description_c, i.numero_item, i.designation
+                FROM categorie c
+                LEFT JOIN item i ON c.numero_categorie = i.numero_categorie AND i.user_id = %s
+                WHERE c.user_id = %s AND (c.numero_categorie = %s OR %s IS NULL)
+            """, (user_id, user_id, numero_categorie, numero_categorie))
+            rows = cur.fetchall()
+            categories = {}
+            for row in rows:
+                cat_id = row['numero_categorie']
+                if cat_id not in categories:
+                    categories[cat_id] = {'numero_categorie': cat_id, 'description_c': row['description_c'], 'produits': []}
+                if row['numero_item']:
+                    categories[cat_id]['produits'].append({'numero_item': row['numero_item'], 'designation': row['designation']})
+            cur.close()
+            conn.close()
+            return jsonify({'categories': list(categories.values())}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
