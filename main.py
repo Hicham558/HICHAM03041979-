@@ -2555,6 +2555,8 @@ def assigner_categorie():
         numero_item = data.get('numero_item')
         numero_categorie = data.get('numer_categorie')
 
+        logger.debug(f"Requête reçue: numero_item={numero_item}, numer_categorie={numero_categorie}, user_id={user_id}")
+
         if numero_item is None:
             logger.error("numero_item manquant dans la requête")
             return jsonify({'erreur': 'Numéro d\'article requis'}), 400
@@ -2571,8 +2573,6 @@ def assigner_categorie():
             except (ValueError, TypeError) as e:
                 logger.error(f"numero_categorie invalide: {numero_categorie}, erreur: {str(e)}")
                 return jsonify({'erreur': 'Numéro de catégorie doit être un entier'}), 400
-
-        logger.debug(f"Tentative d'assignation: item={numero_item}, categorie={numero_categorie}, user_id={user_id}")
 
         conn = get_conn()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -2593,7 +2593,7 @@ def assigner_categorie():
                 "SELECT numer_categorie, description_c FROM categorie WHERE numer_categorie = %s AND user_id = %s",
                 (numero_categorie, user_id)
             )
-            category = cur.fetchone()
+            category29 = cur.fetchone()
             if not category:
                 logger.error(f"Catégorie non trouvée: numer_categorie={numero_categorie}, user_id={user_id}")
                 cur.close()
