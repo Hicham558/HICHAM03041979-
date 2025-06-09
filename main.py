@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
+import logging
 import os
 from psycopg2.extras import RealDictCursor
 from datetime import datetime,timedelta
@@ -24,6 +25,10 @@ def validate_user_id():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
     return user_id
+
+# Configurez le logger
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
@@ -2594,7 +2599,7 @@ def assigner_categorie():
                 "SELECT numer_categorie, description_c FROM categorie WHERE numer_categorie = %s AND user_id = %s",
                 (numero_categorie, user_id)
             )
-            category29 = cur.fetchone()
+            category = cur.fetchone()
             if not category:
                 logger.error(f"Catégorie non trouvée: numer_categorie={numero_categorie}, user_id={user_id}")
                 cur.close()
