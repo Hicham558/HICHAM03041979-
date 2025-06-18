@@ -1,13 +1,15 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
+import logging
 import os
 from psycopg2.extras import RealDictCursor
 from datetime import datetime,timedelta
 
 
 app = Flask(__name__)
-CORS(app, origins=["https://hicham558.github.io","https://firepoz-s7tl.vercel.app"])  # Autoriser les requêtes depuis ton front-end
+CORS(app, resources={r"/*": {"origins": "*"}})
+# CORS(app, origins=["https://hicham558.github.io","https://firepoz-s7tl.vercel.app"])  # Autoriser les requêtes depuis ton front-end
 app.debug = True  # Activer le mode debug pour voir les erreurs
 
 # Connexion à la base de données (compatible avec Railway)
@@ -23,6 +25,10 @@ def validate_user_id():
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
     return user_id
+
+# Configurez le logger
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
@@ -2439,6 +2445,241 @@ def modifier_reception(numero_mouvement):
         if conn:
             cur.close()
             conn.close()
+# --- Categories ---
+@app.route('/liste_categories', methods=['GET'])
+def liste_categories():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numer_categorie, description_c FROM categorie WHERE user_id = %s ORDER BY description_c", (user_id,))
+        categories = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify(categories), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_categorie', methods=['POST'])
+def ajouter_categorie():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    description_c = data.get('description_c')
+    if not description_c:
+        return jsonify({'erreur': 'Description requise'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO categorie (description_c, user_id) VALUES (%s, %s) RETURNING numer_categorie",
+            (description_c, user_id)
+        )
+        category_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie ajoutée', 'id': category_id}), 201
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_categorie/<int:numer_categorie>', methods=['PUT'])
+def modifier_categorie(numer_categorie):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    description_c = data.get('description_c')
+    if not description_c:
+        return jsonify({'erreur': 'Description requise'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE categorie SET description_c = %s WHERE numer_categorie = %s AND user_id = %s RETURNING numer_categorie",
+            (description_c, numer_categorie, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie modifiée'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/supprimer_categorie/<int:numer_categorie>', methods=['DELETE'])
+def supprimer_categorie(numer_categorie):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        # Check if category is used by any item
+        cur.execute("SELECT 1 FROM item WHERE numero_categorie = %s AND user_id = %s", (numer_categorie, user_id))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie utilisée par des produits'}), 400
+        cur.execute("DELETE FROM categorie WHERE numer_categorie = %s AND user_id = %s", (numer_categorie, user_id))
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Catégorie non trouvée'}), 404
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Catégorie supprimée'}), 200
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/assigner_categorie', methods=['POST'])
+def assigner_categorie():
+    try:
+        user_id = validate_user_id()
+        if isinstance(user_id, tuple):
+            logger.error(f"Échec validation user_id: {user_id[0].get('erreur')}")
+            return user_id
+
+        data = request.get_json()
+        if not data:
+            logger.error("Données JSON manquantes dans la requête")
+            return jsonify({'erreur': 'Données JSON requises'}), 400
+
+        numero_item = data.get('numero_item')
+        numero_categorie = data.get('numer_categorie')
+
+        logger.debug(f"Requête reçue: numero_item={numero_item}, numer_categorie={numero_categorie}, user_id={user_id}")
+
+        if numero_item is None:
+            logger.error("numero_item manquant dans la requête")
+            return jsonify({'erreur': 'Numéro d\'article requis'}), 400
+
+        try:
+            numero_item = int(numero_item)
+        except (ValueError, TypeError) as e:
+            logger.error(f"numero_item invalide: {numero_item}, erreur: {str(e)}")
+            return jsonify({'erreur': 'Numéro d\'article doit être un entier'}), 400
+
+        if numero_categorie is not None:
+            try:
+                numero_categorie = int(numero_categorie)
+            except (ValueError, TypeError) as e:
+                logger.error(f"numero_categorie invalide: {numero_categorie}, erreur: {str(e)}")
+                return jsonify({'erreur': 'Numéro de catégorie doit être un entier'}), 400
+
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute(
+            "SELECT numero_item, designation FROM item WHERE numero_item = %s AND user_id = %s",
+            (numero_item, user_id)
+        )
+        item = cur.fetchone()
+        if not item:
+            logger.error(f"Article non trouvé: numero_item={numero_item}, user_id={user_id}")
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': f'Article {numero_item} non trouvé pour cet utilisateur'}), 404
+
+        if numero_categorie is not None:
+            cur.execute(
+                "SELECT numer_categorie, description_c FROM categorie WHERE numer_categorie = %s AND user_id = %s",
+                (numero_categorie, user_id)
+            )
+            category = cur.fetchone()
+            if not category:
+                logger.error(f"Catégorie non trouvée: numer_categorie={numero_categorie}, user_id={user_id}")
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': f'Catégorie {numero_categorie} non trouvée pour cet utilisateur'}), 404
+
+        cur.execute(
+            "UPDATE item SET numero_categorie = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_categorie",
+            (numero_categorie, numero_item, user_id)
+        )
+        updated = cur.fetchone()
+        if cur.rowcount == 0:
+            logger.error(f"Aucun article mis à jour: numero_item={numero_item}, user_id={user_id}")
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Aucun article mis à jour, vérifiez les données'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({
+            'statut': 'Catégorie assignée',
+            'numero_item': numero_item,
+            'numer_categorie': numero_categorie
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Erreur dans assigner_categorie: {str(e)}", exc_info=True)
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            cur.close()
+            conn.close()
+        return jsonify({'erreur': f'Erreur serveur: {str(e)}'}), 500
+
+@app.route('/liste_produits_par_categorie', methods=['GET'])
+def liste_produits_par_categorie():
+    try:
+        user_id = validate_user_id()
+        if isinstance(user_id, tuple):
+            logger.error(f"Échec validation user_id: {user_id[0].get('erreur')}")
+            return user_id
+        numero_categorie = request.args.get('numero_categorie', type=int)
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        if numero_categorie is None and 'numero_categorie' in request.args:
+            cur.execute(
+                "SELECT numero_item, designation FROM item WHERE numero_categorie IS NULL AND user_id = %s",
+                (user_id,)
+            )
+            produits = cur.fetchall()
+            cur.close()
+            conn.close()
+            return jsonify({'produits': produits}), 200
+        else:
+            cur.execute("""
+                SELECT c.numer_categorie, c.description_c, i.numero_item, i.designation
+                FROM categorie c
+                LEFT JOIN item i ON c.numer_categorie = i.numero_categorie AND i.user_id = %s
+                WHERE c.user_id = %s AND (c.numer_categorie = %s OR %s IS NULL)
+            """, (user_id, user_id, numero_categorie, numero_categorie))
+            rows = cur.fetchall()
+            categories = {}
+            for row in rows:
+                cat_id = row['numer_categorie']
+                if cat_id not in categories:
+                    categories[cat_id] = {'numero_categorie': cat_id, 'description_c': row['description_c'], 'produits': []}
+                if row['numero_item']:
+                    categories[cat_id]['produits'].append({
+                        'numero_item': row['numero_item'],
+                        'designation': row['designation']
+                    })
+            cur.close()
+            conn.close()
+            return jsonify({'categories': list(categories.values())}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans liste_produits_par_categorie: {str(e)}", exc_info=True)
+        if 'conn' in locals() and conn:
+            cur.close()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 
 # Lancer l'application
 if __name__ == '__main__':
