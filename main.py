@@ -288,84 +288,7 @@ def supprimer_fournisseur(numero_fou):
 
 
 # --- Produits ---
-@app.route('/liste_produits', methods=['GET'])
-def liste_produits():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
 
-    try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        produits = [
-            {
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
-                'QTE': row[3],
-                'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00',
-                'REF': row[6] or ''
-            }
-            for row in rows
-        ]
-        return jsonify(produits)
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/modifier_item/<numero_item>', methods=['PUT'])
-def modifier_item(numero_item):
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
-
-    data = request.get_json()
-    designation = data.get('designation')
-    bar = data.get('bar')
-    prix = data.get('prix')
-    qte = data.get('qte')
-    prixba = data.get('prixba')
-
-    if not all([designation, bar, prix is not None, qte is not None]):
-        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
-
-    try:
-        prix = float(prix)
-        qte = int(qte)
-        if prix < 0 or qte < 0:
-            return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
-
-        conn = get_conn()
-        cur = conn.cursor()
-        # Vérifier l'unicité de bar (sauf pour cet item)
-        cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, numero_item))
-        if cur.fetchone():
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Ce code-barres est déjà utilisé'}), 409
-
-        cur.execute(
-            "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_item",
-            (designation, bar, prix, qte, prixba or '0.00', numero_item, user_id)
-        )
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Produit non trouvé'}), 404
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Produit modifié'}), 200
-    except ValueError:
-        return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
 
 # Calcul du chiffre de contrôle EAN-13
 def calculate_ean13_check_digit(code12):
@@ -378,6 +301,45 @@ def calculate_ean13_check_digit(code12):
     check_digit = next_multiple_of_10 - total
     return check_digit
 
+@app.route('/liste_produits', methods=['GET'])
+def liste_produits():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Récupérer les items
+        cur.execute("""
+            SELECT numero_item, bar, designation, qte, prix, prixba, ref 
+            FROM item 
+            WHERE user_id = %s 
+            ORDER BY designation
+        """, (user_id,))
+        rows = cur.fetchall()
+
+        produits = []
+        for row in rows:
+            # Récupérer les codes-barres supplémentaires depuis la table codebar
+            cur.execute("SELECT BAR2 FROM codebar WHERE BAR = %s AND user_id = %s", (row['numero_item'], user_id))
+            additional_barcodes = [r['bar2'] for r in cur.fetchall()]
+            produits.append({
+                'NUMERO_ITEM': row['numero_item'],
+                'BAR': row['bar'],
+                'DESIGNATION': row['designation'],
+                'QTE': row['qte'],
+                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
+                'PRIXBA': row['prixba'] or '0.00',
+                'REF': row['ref'] or '',
+                'ADDITIONAL_BARCODES': additional_barcodes
+            })
+        cur.close()
+        conn.close()
+        return jsonify(produits)
+    except Exception as e:
+        return jsonify({'erreur': str(e)}), 500
+
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
     user_id = validate_user_id()
@@ -387,6 +349,7 @@ def ajouter_item():
     data = request.get_json()
     designation = data.get('designation')
     bar = data.get('bar')
+    additional_barcodes = data.get('additional_barcodes', [])
     prix = data.get('prix')
     qte = data.get('qte')
     prixba = data.get('prixba')
@@ -403,29 +366,45 @@ def ajouter_item():
         conn = get_conn()
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        # Verrouiller pour éviter les conflits
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Si bar est fourni, vérifier son unicité pour ce user_id
+        # Vérifier l'unicité de bar et additional_barcodes
         if bar:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
             if cur.fetchone():
                 cur.close()
                 conn.close()
-                return jsonify({'erreur': 'Ce code-barres existe déjà pour cet utilisateur'}), 409
+                return jsonify({'erreur': 'Ce code-barres principal existe déjà'}), 409
+            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (bar, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres principal existe comme code supplémentaire'}), 409
+        for additional_barcode in additional_barcodes:
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (additional_barcode, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe comme code principal'}), 409
+            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (additional_barcode, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe déjà'}), 409
 
         # Trouver le prochain numéro disponible pour ref et bar
         cur.execute("SELECT ref, bar FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
         existing_items = cur.fetchall()
         used_numbers = []
         for item in existing_items:
-            # Extraire le numéro de ref (ex. P3 → 3)
             ref_num = int(item['ref'][1:]) if item['ref'].startswith('P') and item['ref'][1:].isdigit() else 0
-            # Extraire le numéro de bar (ex. 100000000003X → 3)
             bar_num = int(item['bar'][1:12]) if item['bar'].startswith('1') and len(item['bar']) == 13 and item['bar'][1:12].isdigit() else 0
             used_numbers.append(max(ref_num, bar_num))
+        cur.execute("SELECT BAR2 FROM codebar WHERE user_id = %s", (user_id,))
+        for row in cur.fetchall():
+            bar_num = int(row['bar2'][1:12]) if row['bar2'].startswith('1') and len(row['bar2']) == 13 and row['bar2'][1:12].isdigit() else 0
+            used_numbers.append(bar_num)
 
-        # Trouver le plus petit numéro non utilisé à partir de 1
         next_number = 1
         used_numbers = sorted(set(used_numbers))
         for num in used_numbers:
@@ -434,10 +413,8 @@ def ajouter_item():
             elif num > next_number:
                 break
 
-        # Générer ref
         ref = f"P{next_number}"
 
-        # Insérer le produit (utiliser une valeur temporaire pour bar si vide)
         temp_bar = bar if bar else 'TEMP_BAR'
         cur.execute(
             "INSERT INTO item (designation, bar, prix, qte, prixba, ref, user_id) "
@@ -446,26 +423,32 @@ def ajouter_item():
         )
         item_id = cur.fetchone()['numero_item']
 
-        # Si bar est vide, générer un code EAN-13 basé sur next_number
         if not bar:
-            # Créer un code de 12 chiffres
-            code12 = f"1{next_number:011d}"  # Ex. next_number=1 → "100000000001"
+            code12 = f"1{next_number:011d}"
             check_digit = calculate_ean13_check_digit(code12)
-            bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
-
-            # Vérifier l'unicité du code EAN-13 généré
-            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", 
-                       (bar, user_id, item_id))
+            bar = f"{code12}{check_digit}"
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, item_id))
             if cur.fetchone():
                 conn.rollback()
                 cur.close()
                 conn.close()
-                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
-
-            # Mettre à jour l'enregistrement avec le code EAN-13
+                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà comme code principal'}), 409
+            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (bar, user_id))
+            if cur.fetchone():
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Le code EAN-13 généré existe comme code supplémentaire'}), 409
             cur.execute(
                 "UPDATE item SET bar = %s WHERE numero_item = %s AND user_id = %s",
                 (bar, item_id, user_id)
+            )
+
+        # Insérer les codes-barres supplémentaires
+        for additional_barcode in additional_barcodes:
+            cur.execute(
+                "INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
+                (item_id, additional_barcode, user_id)
             )
 
         conn.commit()
@@ -481,7 +464,88 @@ def ajouter_item():
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
-# --- Suppression Produit ---
+@app.route('/modifier_item/<numero_item>', methods=['PUT'])
+def modifier_item(numero_item):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    designation = data.get('designation')
+    bar = data.get('bar')
+    additional_barcodes = data.get('additional_barcodes', [])
+    prix = data.get('prix')
+    qte = data.get('qte')
+    prixba = data.get('prixba')
+
+    if not all([designation, bar, prix is not None, qte is not None]):
+        return jsonify({'erreur': 'Champs obligatoires manquants (designation, bar, prix, qte)'}), 400
+
+    try:
+        prix = float(prix)
+        qte = int(qte)
+        if prix < 0 or qte < 0:
+            return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
+
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        # Vérifier l'unicité de bar (sauf pour cet item)
+        cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", (bar, user_id, numero_item))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Ce code-barres principal est déjà utilisé'}), 409
+        cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s AND BAR != %s", (bar, user_id, numero_item))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Ce code-barres principal existe comme code supplémentaire'}), 409
+        # Vérifier l'unicité des codes-barres supplémentaires
+        for additional_barcode in additional_barcodes:
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (additional_barcode, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe comme code principal'}), 409
+            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s AND BAR != %s", (additional_barcode, user_id, numero_item))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe déjà'}), 409
+
+        # Mettre à jour l'item
+        cur.execute(
+            "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s RETURNING numero_item",
+            (designation, bar, prix, qte, prixba or '0.00', numero_item, user_id)
+        )
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        # Supprimer les anciens codes-barres supplémentaires
+        cur.execute("DELETE FROM codebar WHERE BAR = %s AND user_id = %s", (numero_item, user_id))
+        # Insérer les nouveaux codes-barres supplémentaires
+        for additional_barcode in additional_barcodes:
+            cur.execute(
+                "INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
+                (numero_item, additional_barcode, user_id)
+            )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Produit modifié'}), 200
+    except ValueError:
+        conn.rollback()
+        return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
 @app.route('/supprimer_item/<numero_item>', methods=['DELETE'])
 def supprimer_item(numero_item):
     user_id = validate_user_id()
@@ -490,7 +554,11 @@ def supprimer_item(numero_item):
 
     try:
         conn = get_conn()
+        conn.autocommit = False
         cur = conn.cursor()
+        # Supprimer les codes-barres supplémentaires
+        cur.execute("DELETE FROM codebar WHERE BAR = %s AND user_id = %s", (numero_item, user_id))
+        # Supprimer l'item
         cur.execute("DELETE FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
         if cur.rowcount == 0:
             cur.close()
@@ -501,6 +569,73 @@ def supprimer_item(numero_item):
         conn.close()
         return jsonify({'statut': 'Produit supprimé'}), 200
     except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/manage_barcodes/<numero_item>', methods=['POST', 'DELETE'])
+def manage_barcodes(numero_item):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    barcode = data.get('barcode')
+    if not barcode:
+        return jsonify({'erreur': 'Code-barres requis'}), 400
+
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        # Vérifier si l'item existe
+        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        if request.method == 'POST':
+            # Vérifier l'unicité du code-barres
+            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (barcode, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres existe comme code principal'}), 409
+            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (barcode, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres existe déjà comme code supplémentaire'}), 409
+
+            # Ajouter le code-barres
+            cur.execute(
+                "INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
+                (numero_item, barcode, user_id)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({'statut': 'Code-barres ajouté'}), 201
+
+        elif request.method == 'DELETE':
+            # Supprimer le code-barres
+            cur.execute("DELETE FROM codebar WHERE BAR = %s AND BAR2 = %s AND user_id = %s", (numero_item, barcode, user_id))
+            if cur.rowcount == 0:
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Code-barres non trouvé'}), 404
+            conn.commit()
+            cur.close()
+            conn.close()
+            return jsonify({'statut': 'Code-barres supprimé'}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/valider_vente', methods=['POST'])
