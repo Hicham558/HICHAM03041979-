@@ -295,25 +295,34 @@ def liste_produits():
         return user_id
 
     try:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
+        conn = get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # Récupérer les items
+        cur.execute("""
+            SELECT numero_item, bar, designation, qte, prix, prixba, ref
+            FROM item
+            WHERE user_id = %s
+            ORDER BY designation
+        """, (user_id,))
         rows = cur.fetchall()
+
+        produits = []
+        for row in rows:
+            # Récupérer les codes-barres supplémentaires
+            cur.execute("SELECT BAR2 FROM codebarcodes WHERE BAR = %s AND user_id = %s", (row['numero_item'], user_id))
+            additional_barcodes = [r['bar2'] for r in cur.fetchall()]
+            produits.append({
+                'NUMERO_ITEM': row['numero_item'],
+                'BAR': row['bar'],
+                'DESIGNATION': row['designation'],
+                'QTE': row['qte'],
+                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
+                'PRIXBA': row['prixba'] or '0.00',
+                'REF': row['ref'] or '',
+                'ADDITIONAL_BARCODES': additional_barcodes
+            })
         cur.close()
         conn.close()
-
-        produits = [
-            {
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
-                'QTE': row[3],
-                'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00',
-                'REF': row[6] or ''
-            }
-            for row in rows
-        ]
         return jsonify(produits)
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
@@ -503,6 +512,56 @@ def supprimer_item(numero_item):
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 
+
+@app.route('/manage_barcodes/<numero_item>', methods=['POST'])
+def manage_barcodes(numero_item):
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    barcode = data.get('barcode')
+    if not barcode:
+        return jsonify({'erreur': 'Code-barres requis'}), 400
+
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+
+        # Vérifier si l'item existe
+        cur.execute("SELECT 1 FROM item WHERE item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        # Vérifier l'unicité du code-barres
+        cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (barcode, user_id))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Ce code-barres existe comme code principal'}), 409
+        cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (barcode, user_id))
+        if cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Ce code-barres existe déjà comme code supplémentaire'}), 400
+
+        # Ajouter le code-barres
+        cur.execute(
+            INSERT INTO codebar (BAR, BAR2 BAR2, user_id) VALUES (%s, %s, %s)",
+            (numero_item, barcode, user_id)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Code-barres ajouté'}), 201
+    } catch (Exception e as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
     user_id = validate_user_id()
