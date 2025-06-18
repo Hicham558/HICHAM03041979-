@@ -290,6 +290,9 @@ def supprimer_fournisseur(numero_fou):
 # --- Produits ---
 
 
+
+app = Flask(__name__)
+
 # Calcul du chiffre de contrôle EAN-13
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
@@ -349,7 +352,6 @@ def ajouter_item():
     data = request.get_json()
     designation = data.get('designation')
     bar = data.get('bar')
-    additional_barcodes = data.get('additional_barcodes', [])
     prix = data.get('prix')
     qte = data.get('qte')
     prixba = data.get('prixba')
@@ -368,7 +370,7 @@ def ajouter_item():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Vérifier l'unicité de bar et additional_barcodes
+        # Vérifier l'unicité de bar
         if bar:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
             if cur.fetchone():
@@ -380,17 +382,6 @@ def ajouter_item():
                 cur.close()
                 conn.close()
                 return jsonify({'erreur': 'Ce code-barres principal existe comme code supplémentaire'}), 409
-        for additional_barcode in additional_barcodes:
-            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (additional_barcode, user_id))
-            if cur.fetchone():
-                cur.close()
-                conn.close()
-                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe comme code principal'}), 409
-            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (additional_barcode, user_id))
-            if cur.fetchone():
-                cur.close()
-                conn.close()
-                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe déjà'}), 409
 
         # Trouver le prochain numéro disponible pour ref et bar
         cur.execute("SELECT ref, bar FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
@@ -444,13 +435,6 @@ def ajouter_item():
                 (bar, item_id, user_id)
             )
 
-        # Insérer les codes-barres supplémentaires
-        for additional_barcode in additional_barcodes:
-            cur.execute(
-                "INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
-                (item_id, additional_barcode, user_id)
-            )
-
         conn.commit()
         cur.close()
         conn.close()
@@ -473,7 +457,6 @@ def modifier_item(numero_item):
     data = request.get_json()
     designation = data.get('designation')
     bar = data.get('bar')
-    additional_barcodes = data.get('additional_barcodes', [])
     prix = data.get('prix')
     qte = data.get('qte')
     prixba = data.get('prixba')
@@ -496,23 +479,11 @@ def modifier_item(numero_item):
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Ce code-barres principal est déjà utilisé'}), 409
-        cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s AND BAR != %s", (bar, user_id, numero_item))
+        cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s", (bar, user_id))
         if cur.fetchone():
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Ce code-barres principal existe comme code supplémentaire'}), 409
-        # Vérifier l'unicité des codes-barres supplémentaires
-        for additional_barcode in additional_barcodes:
-            cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (additional_barcode, user_id))
-            if cur.fetchone():
-                cur.close()
-                conn.close()
-                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe comme code principal'}), 409
-            cur.execute("SELECT 1 FROM codebar WHERE BAR2 = %s AND user_id = %s AND BAR != %s", (additional_barcode, user_id, numero_item))
-            if cur.fetchone():
-                cur.close()
-                conn.close()
-                return jsonify({'erreur': f'Le code-barres supplémentaire {additional_barcode} existe déjà'}), 409
 
         # Mettre à jour l'item
         cur.execute(
@@ -523,15 +494,6 @@ def modifier_item(numero_item):
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Produit non trouvé'}), 404
-
-        # Supprimer les anciens codes-barres supplémentaires
-        cur.execute("DELETE FROM codebar WHERE BAR = %s AND user_id = %s", (numero_item, user_id))
-        # Insérer les nouveaux codes-barres supplémentaires
-        for additional_barcode in additional_barcodes:
-            cur.execute(
-                "INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
-                (numero_item, additional_barcode, user_id)
-            )
 
         conn.commit()
         cur.close()
