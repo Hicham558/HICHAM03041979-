@@ -550,7 +550,7 @@ def manage_barcodes(numero_item):
 
         # Ajouter le code-barres
         cur.execute(
-            INSERT INTO codebar (BAR, BAR2 BAR2, user_id) VALUES (%s, %s, %s)",
+            INSERT INTO codebar (BAR, BAR2, user_id) VALUES (%s, %s, %s)",
             (numero_item, barcode, user_id)
         )
         conn.commit()
