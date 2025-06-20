@@ -69,7 +69,55 @@ def liste_clients():
         return jsonify(clients)
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
+@app.route('/ajouter_codebar_lie', methods=['POST'])
+def ajouter_codebar_lie():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
 
+    data = request.get_json()
+    numero_item = data.get('numero_item')
+    barcode = data.get('barcode')
+
+    if not numero_item or not barcode:
+        return jsonify({'erreur': 'numero_item et barcode sont requis'}), 400
+
+    # Vérifier si le produit existe
+    item = Item.query.filter_by(numero_item=numero_item, user_id=user_id).first()
+    if not item:
+        return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+    # Vérifier si le code-barres lié existe déjà
+    if CodeBar.query.filter_by(bar2=barcode, user_id=user_id).first():
+        return jsonify({'erreur': 'Ce code-barres lié existe déjà'}), 400
+
+    # Ajouter le code-barres lié
+    new_codebar = CodeBar(bar2=barcode, bar=item.bar, user_id=user_id)
+    db.session.add(new_codebar)
+    db.session.commit()
+
+    return jsonify({'message': 'Code-barres lié ajouté avec succès'}), 200
+
+@app.route('/liste_produits', methods=['GET'])
+def liste_produits():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
+
+    produits = Item.query.filter_by(user_id=user_id).all()
+    result = []
+    for produit in produits:
+        linked_barcodes = [codebar.bar2 for codebar in CodeBar.query.filter_by(bar=produit.bar, user_id=user_id).all()]
+        result.append({
+            'NUMERO_ITEM': produit.numero_item,
+            'DESIGNATION': produit.designation,
+            'BAR': produit.bar,
+            'PRIX': produit.prix,
+            'QTE': produit.qte,
+            'linked_barcodes': linked_barcodes
+        })
+
+    return jsonify(result), 200
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
     user_id = validate_user_id()
