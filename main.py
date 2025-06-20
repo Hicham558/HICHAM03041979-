@@ -126,7 +126,55 @@ def ajouter_codebar_lie():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-        
+
+@app.route('/supprimer_codebar_lie', methods=['POST'])
+def supprimer_codebar_lie():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    numero_item = data.get('numero_item')
+    bar2 = data.get('bar2')
+
+    if not numero_item or not bar2:
+        return jsonify({'erreur': 'numero_item et bar2 sont requis'}), 400
+
+    try:
+        numero_item = int(numero_item)
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        item = cur.fetchone()
+        if not item:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+        bar = item['bar']
+
+        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, bar, user_id))
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Code-barres lié non trouvé pour ce produit'}), 404
+
+        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, bar, user_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Code-barres lié supprimé'}), 200
+    except ValueError:
+        conn.rollback()
+        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
 @app.route('/liste_codebar_lies', methods=['GET'])
 def liste_codebar_lies():
     user_id = validate_user_id()
