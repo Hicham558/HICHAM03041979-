@@ -421,29 +421,26 @@ def liste_produits():
 
     try:
         conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        cur.execute("SELECT numero_item, designation, bar, prix, qte FROM item WHERE user_id = %s", (user_id,))
-        produits = cur.fetchall()
-
-        result = []
-        for produit in produits:
-            cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s", (produit['bar'], user_id))
-            linked_barcodes = [row['bar2'] for row in cur.fetchall()]
-            result.append({
-                'NUMERO_ITEM': produit['numero_item'],
-                'DESIGNATION': produit['designation'],
-                'BAR': produit['bar'],
-                'PRIX': produit['prix'],
-                'QTE': produit['qte'],
-                'linked_barcodes': linked_barcodes
-            })
-
+        cur = conn.cursor()
+        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
+        rows = cur.fetchall()
         cur.close()
         conn.close()
-        return jsonify(result), 200
+
+        produits = [
+            {
+                'NUMERO_ITEM': row[0],
+                'BAR': row[1],
+                'DESIGNATION': row[2],
+                'QTE': row[3],
+                'PRIX': float(row[4]) if row[4] is not None else 0.0,
+                'PRIXBA': row[5] or '0.00',
+                'REF': row[6] or ''
+            }
+            for row in rows
+        ]
+        return jsonify(produits)
     except Exception as e:
-        if conn:
-            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/modifier_item/<numero_item>', methods=['PUT'])
