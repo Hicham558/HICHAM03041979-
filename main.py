@@ -39,6 +39,7 @@ def index():
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
+
 @app.route('/ajouter_codebar_lie', methods=['POST'])
 def ajouter_codebar_lie():
     user_id = validate_user_id()
@@ -58,16 +59,15 @@ def ajouter_codebar_lie():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier si le produit existe et récupérer son bar
-        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        # Vérifier que l'item existe
+        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
         item = cur.fetchone()
         if not item:
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Produit non trouvé'}), 404
-        bar = item['bar']
 
-        # Si bar2 est fourni, vérifier son unicité
+        # Vérifier que bar2 n'existe pas déjà
         if bar2:
             cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
             if cur.fetchone():
@@ -75,7 +75,7 @@ def ajouter_codebar_lie():
                 conn.close()
                 return jsonify({'erreur': 'Ce code-barres lié existe déjà pour cet utilisateur'}), 409
 
-        # Trouver le prochain numéro disponible pour bar2
+        # Générer un bar2 si non fourni
         cur.execute("SELECT bar2 FROM codebar WHERE user_id = %s", (user_id,))
         existing_barcodes = cur.fetchall()
         used_numbers = []
@@ -91,12 +91,10 @@ def ajouter_codebar_lie():
             elif num > next_number:
                 break
 
-        # Si bar2 n'est pas fourni, générer un code EAN-13
         if not bar2:
             code12 = f"1{next_number:011d}"
             check_digit = calculate_ean13_check_digit(code12)
             bar2 = f"{code12}{check_digit}"
-
             cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
             if cur.fetchone():
                 conn.rollback()
@@ -104,13 +102,10 @@ def ajouter_codebar_lie():
                 conn.close()
                 return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
 
-        # Verrouiller la table codebar pour éviter les conflits
         cur.execute("LOCK TABLE codebar IN EXCLUSIVE MODE")
-
-        # Insérer le code-barres lié
         cur.execute(
-            "INSERT INTO codebar (bar2, bar, user_id) VALUES (%s, %s, %s) RETURNING n",
-            (bar2, bar, user_id)
+            "INSERT INTO codebar (bar2, numero_item, user_id) VALUES (%s, %s, %s) RETURNING n",
+            (bar2, numero_item, user_id)
         )
         codebar_id = cur.fetchone()['n']
 
@@ -124,6 +119,47 @@ def ajouter_codebar_lie():
     except Exception as e:
         if conn:
             conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+
+
+@app.route('/liste_codebar_lies', methods=['GET'])
+def liste_codebar_lies():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    numero_item = request.args.get('numero_item')
+    if not numero_item:
+        return jsonify({'erreur': 'numero_item est requis'}), 400
+
+    try:
+        numero_item = int(numero_item)
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier que l'item existe
+        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        item = cur.fetchone()
+        if not item:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        # Récupérer les codes-barres liés
+        cur.execute("SELECT bar2 FROM codebar WHERE numero_item = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
+        linked_barcodes = [row['bar2'] for row in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+        return jsonify({'linked_barcodes': linked_barcodes}), 200
+    except ValueError:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
+    except Exception as e:
+        if conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
@@ -146,21 +182,23 @@ def supprimer_codebar_lie():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        # Vérifier que l'item existe
+        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
         item = cur.fetchone()
         if not item:
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Produit non trouvé'}), 404
-        bar = item['bar']
 
-        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, bar, user_id))
+        # Vérifier que le code-barres lié existe
+        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND numero_item = %s AND user_id = %s", (bar2, numero_item, user_id))
         if not cur.fetchone():
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Code-barres lié non trouvé pour ce produit'}), 404
 
-        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, bar, user_id))
+        # Supprimer le code-barres lié
+        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND numero_item = %s AND user_id = %s", (bar2, numero_item, user_id))
 
         conn.commit()
         cur.close()
@@ -172,44 +210,6 @@ def supprimer_codebar_lie():
     except Exception as e:
         if conn:
             conn.rollback()
-            conn.close()
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/liste_codebar_lies', methods=['GET'])
-def liste_codebar_lies():
-    user_id = validate_user_id()
-    if isinstance(user_id, tuple):
-        return user_id
-
-    numero_item = request.args.get('numero_item')
-    if not numero_item:
-        return jsonify({'erreur': 'numero_item est requis'}), 400
-
-    try:
-        numero_item = int(numero_item)
-        conn = get_conn()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
-        item = cur.fetchone()
-        if not item:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Produit non trouvé'}), 404
-        bar = item['bar']
-
-        cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s ORDER BY n", (bar, user_id))
-        linked_barcodes = [row['bar2'] for row in cur.fetchall()]
-
-        cur.close()
-        conn.close()
-        return jsonify({'linked_barcodes': linked_barcodes}), 200
-    except ValueError:
-        if conn:
-            conn.close()
-        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
-    except Exception as e:
-        if conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
