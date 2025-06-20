@@ -147,8 +147,8 @@ def liste_codebar_lies():
             conn.close()
             return jsonify({'erreur': 'Produit non trouvé'}), 404
 
-        # Récupérer les codes-barres liés en utilisant bar (qui contient numero_item)
-        cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
+        # Récupérer les codes-barres liés en castant bar en INTEGER
+        cur.execute("SELECT bar2 FROM codebar WHERE bar::INTEGER = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
         linked_barcodes = [row['bar2'] for row in cur.fetchall()]
 
         cur.close()
