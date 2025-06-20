@@ -98,26 +98,6 @@ def ajouter_codebar_lie():
 
     return jsonify({'message': 'Code-barres lié ajouté avec succès'}), 200
 
-@app.route('/liste_produits', methods=['GET'])
-def liste_produits():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
-    produits = Item.query.filter_by(user_id=user_id).all()
-    result = []
-    for produit in produits:
-        linked_barcodes = [codebar.bar2 for codebar in CodeBar.query.filter_by(bar=produit.bar, user_id=user_id).all()]
-        result.append({
-            'NUMERO_ITEM': produit.numero_item,
-            'DESIGNATION': produit.designation,
-            'BAR': produit.bar,
-            'PRIX': produit.prix,
-            'QTE': produit.qte,
-            'linked_barcodes': linked_barcodes
-        })
-
-    return jsonify(result), 200
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
     user_id = validate_user_id()
