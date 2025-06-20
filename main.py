@@ -104,7 +104,7 @@ def ajouter_codebar_lie():
 
         cur.execute("LOCK TABLE codebar IN EXCLUSIVE MODE")
         cur.execute(
-            "INSERT INTO codebar (bar2, numero_item, user_id) VALUES (%s, %s, %s) RETURNING n",
+            "INSERT INTO codebar (bar2, bar, user_id) VALUES (%s, %s, %s) RETURNING n",
             (bar2, numero_item, user_id)
         )
         codebar_id = cur.fetchone()['n']
@@ -147,8 +147,8 @@ def liste_codebar_lies():
             conn.close()
             return jsonify({'erreur': 'Produit non trouvé'}), 404
 
-        # Récupérer les codes-barres liés
-        cur.execute("SELECT bar2 FROM codebar WHERE numero_item = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
+        # Récupérer les codes-barres liés en utilisant bar (qui contient numero_item)
+        cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
         linked_barcodes = [row['bar2'] for row in cur.fetchall()]
 
         cur.close()
@@ -191,14 +191,14 @@ def supprimer_codebar_lie():
             return jsonify({'erreur': 'Produit non trouvé'}), 404
 
         # Vérifier que le code-barres lié existe
-        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND numero_item = %s AND user_id = %s", (bar2, numero_item, user_id))
+        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item, user_id))
         if not cur.fetchone():
             cur.close()
             conn.close()
             return jsonify({'erreur': 'Code-barres lié non trouvé pour ce produit'}), 404
 
         # Supprimer le code-barres lié
-        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND numero_item = %s AND user_id = %s", (bar2, numero_item, user_id))
+        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item, user_id))
 
         conn.commit()
         cur.close()
@@ -212,7 +212,6 @@ def supprimer_codebar_lie():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-
 # --- Clients ---
 @app.route('/liste_clients', methods=['GET'])
 def liste_clients():
