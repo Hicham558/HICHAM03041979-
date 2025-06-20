@@ -39,6 +39,94 @@ def index():
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
+@app.route('/ajouter_codebar_lie', methods=['POST'])
+def ajouter_codebar_lie():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    numero_item = data.get('numero_item')
+    bar2 = data.get('barcode')
+
+    if not numero_item:
+        return jsonify({'erreur': 'numero_item est requis'}), 400
+
+    try:
+        numero_item = int(numero_item)
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier si le produit existe et récupérer son bar
+        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        item = cur.fetchone()
+        if not item:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+        bar = item['bar']
+
+        # Si bar2 est fourni, vérifier son unicité
+        if bar2:
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres lié existe déjà pour cet utilisateur'}), 409
+
+        # Trouver le prochain numéro disponible pour bar2
+        cur.execute("SELECT bar2 FROM codebar WHERE user_id = %s", (user_id,))
+        existing_barcodes = cur.fetchall()
+        used_numbers = []
+        for code in existing_barcodes:
+            bar_num = int(code['bar2'][1:12]) if code['bar2'].startswith('1') and len(code['bar2']) == 13 and code['bar2'][1:12].isdigit() else 0
+            used_numbers.append(bar_num)
+
+        next_number = 1
+        used_numbers = sorted(set(used_numbers))
+        for num in used_numbers:
+            if num == next_number:
+                next_number += 1
+            elif num > next_number:
+                break
+
+        # Si bar2 n'est pas fourni, générer un code EAN-13
+        if not bar2:
+            code12 = f"1{next_number:011d}"
+            check_digit = calculate_ean13_check_digit(code12)
+            bar2 = f"{code12}{check_digit}"
+
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
+            if cur.fetchone():
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
+
+        # Verrouiller la table codebar pour éviter les conflits
+        cur.execute("LOCK TABLE codebar IN EXCLUSIVE MODE")
+
+        # Insérer le code-barres lié
+        cur.execute(
+            "INSERT INTO codebar (bar2, bar, user_id) VALUES (%s, %s, %s) RETURNING n",
+            (bar2, bar, user_id)
+        )
+        codebar_id = cur.fetchone()['n']
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({'statut': 'Code-barres lié ajouté', 'id': codebar_id, 'bar2': bar2}), 201
+    except ValueError:
+        conn.rollback()
+        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
 
 # --- Clients ---
 @app.route('/liste_clients', methods=['GET'])
@@ -69,34 +157,6 @@ def liste_clients():
         return jsonify(clients)
     except Exception as e:
         return jsonify({'erreur': str(e)}), 500
-@app.route('/ajouter_codebar_lie', methods=['POST'])
-def ajouter_codebar_lie():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Utilisateur non authentifié'}), 401
-
-    data = request.get_json()
-    numero_item = data.get('numero_item')
-    barcode = data.get('barcode')
-
-    if not numero_item or not barcode:
-        return jsonify({'erreur': 'numero_item et barcode sont requis'}), 400
-
-    # Vérifier si le produit existe
-    item = Item.query.filter_by(numero_item=numero_item, user_id=user_id).first()
-    if not item:
-        return jsonify({'erreur': 'Produit non trouvé'}), 404
-
-    # Vérifier si le code-barres lié existe déjà
-    if CodeBar.query.filter_by(bar2=barcode, user_id=user_id).first():
-        return jsonify({'erreur': 'Ce code-barres lié existe déjà'}), 400
-
-    # Ajouter le code-barres lié
-    new_codebar = CodeBar(bar2=barcode, bar=item.bar, user_id=user_id)
-    db.session.add(new_codebar)
-    db.session.commit()
-
-    return jsonify({'message': 'Code-barres lié ajouté avec succès'}), 200
 
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
