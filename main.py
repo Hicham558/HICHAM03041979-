@@ -126,7 +126,44 @@ def ajouter_codebar_lie():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+        
+@app.route('/liste_codebar_lies', methods=['GET'])
+def liste_codebar_lies():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
+    numero_item = request.args.get('numero_item')
+    if not numero_item:
+        return jsonify({'erreur': 'numero_item est requis'}), 400
+
+    try:
+        numero_item = int(numero_item)
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        cur.execute("SELECT bar FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        item = cur.fetchone()
+        if not item:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+        bar = item['bar']
+
+        cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s ORDER BY n", (bar, user_id))
+        linked_barcodes = [row['bar2'] for row in cur.fetchall()]
+
+        cur.close()
+        conn.close()
+        return jsonify({'linked_barcodes': linked_barcodes}), 200
+    except ValueError:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
+    except Exception as e:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 
 # --- Clients ---
 @app.route('/liste_clients', methods=['GET'])
@@ -384,26 +421,29 @@ def liste_produits():
 
     try:
         conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
-        rows = cur.fetchall()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT numero_item, designation, bar, prix, qte FROM item WHERE user_id = %s", (user_id,))
+        produits = cur.fetchall()
+
+        result = []
+        for produit in produits:
+            cur.execute("SELECT bar2 FROM codebar WHERE bar = %s AND user_id = %s", (produit['bar'], user_id))
+            linked_barcodes = [row['bar2'] for row in cur.fetchall()]
+            result.append({
+                'NUMERO_ITEM': produit['numero_item'],
+                'DESIGNATION': produit['designation'],
+                'BAR': produit['bar'],
+                'PRIX': produit['prix'],
+                'QTE': produit['qte'],
+                'linked_barcodes': linked_barcodes
+            })
+
         cur.close()
         conn.close()
-
-        produits = [
-            {
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
-                'QTE': row[3],
-                'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00',
-                'REF': row[6] or ''
-            }
-            for row in rows
-        ]
-        return jsonify(produits)
+        return jsonify(result), 200
     except Exception as e:
+        if conn:
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/modifier_item/<numero_item>', methods=['PUT'])
