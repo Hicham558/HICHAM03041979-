@@ -40,6 +40,63 @@ def index():
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
 
+@app.route('/rechercher_produit_codebar', methods=['GET'])
+def rechercher_produit_codebar():
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    codebar = request.args.get('codebar')
+    if not codebar:
+        return jsonify({'erreur': 'Code-barres requis'}), 400
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Rechercher d'abord par code-barres principal dans item
+        cur.execute("""
+            SELECT numero_item, bar, designation, prix, prixba, qte
+            FROM item
+            WHERE bar = %s AND user_id = %s
+        """, (codebar, user_id))
+        produit = cur.fetchone()
+
+        if produit:
+            cur.close()
+            conn.close()
+            return jsonify({
+                'statut': 'trouvé',
+                'type': 'principal',
+                'produit': produit
+            }), 200
+
+        # Si non trouvé, rechercher dans codebar pour un code-barres lié
+        cur.execute("""
+            SELECT i.numero_item, i.bar, i.designation, i.prix, i.prixba, i.qte
+            FROM codebar c
+            JOIN item i ON c.bar = i.numero_item::varchar
+            WHERE c.bar2 = %s AND i.user_id = %s
+        """, (codebar, user_id))
+        produit = cur.fetchone()
+
+        if produit:
+            cur.close()
+            conn.close()
+            return jsonify({
+                'statut': 'trouvé',
+                'type': 'lié',
+                'produit': produit
+            }), 200
+
+        cur.close()
+        conn.close()
+        return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+    except Exception as e:
+        if conn:
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 @app.route('/ajouter_codebar_lie', methods=['POST'])
 def ajouter_codebar_lie():
     user_id = validate_user_id()
