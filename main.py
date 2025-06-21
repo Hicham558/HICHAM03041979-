@@ -234,13 +234,12 @@ def supprimer_codebar_lie():
         return jsonify({'erreur': 'numero_item et bar2 sont requis'}), 400
 
     try:
-        numero_item = int(numero_item)
         conn = get_conn()
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         # Vérifier que l'item existe
-        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
+        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (int(numero_item), user_id))
         item = cur.fetchone()
         if not item:
             cur.close()
@@ -261,9 +260,6 @@ def supprimer_codebar_lie():
         cur.close()
         conn.close()
         return jsonify({'statut': 'Code-barres lié supprimé'}), 200
-    except ValueError:
-        conn.rollback()
-        return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
     except Exception as e:
         if conn:
             conn.rollback()
