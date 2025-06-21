@@ -578,13 +578,20 @@ def ajouter_item():
         # Verrouiller pour éviter les conflits
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
-        # Si bar est fourni, vérifier son unicité pour ce user_id
+        # Si bar est fourni, vérifier son unicité pour ce user_id dans la table item
         if bar:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
             if cur.fetchone():
                 cur.close()
                 conn.close()
                 return jsonify({'erreur': 'Ce code-barres existe déjà pour cet utilisateur'}), 409
+
+            # Vérifier si le code-barres existe dans la table codebar pour ce user_id
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar, user_id))
+            if cur.fetchone():
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Ce code-barres existe déjà comme code-barres lié pour cet utilisateur'}), 409
 
         # Trouver le prochain numéro disponible pour ref et bar
         cur.execute("SELECT ref, bar FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
@@ -625,7 +632,7 @@ def ajouter_item():
             check_digit = calculate_ean13_check_digit(code12)
             bar = f"{code12}{check_digit}"  # Ex. "1000000000016"
 
-            # Vérifier l'unicité du code EAN-13 généré
+            # Vérifier l'unicité du code EAN-13 généré dans item
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s AND numero_item != %s", 
                        (bar, user_id, item_id))
             if cur.fetchone():
@@ -633,6 +640,14 @@ def ajouter_item():
                 cur.close()
                 conn.close()
                 return jsonify({'erreur': 'Le code EAN-13 généré existe déjà pour cet utilisateur'}), 409
+
+            # Vérifier l'unicité du code EAN-13 généré dans codebar
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar, user_id))
+            if cur.fetchone():
+                conn.rollback()
+                cur.close()
+                conn.close()
+                return jsonify({'erreur': 'Le code EAN-13 généré existe déjà comme code-barres lié pour cet utilisateur'}), 409
 
             # Mettre à jour l'enregistrement avec le code EAN-13
             cur.execute(
