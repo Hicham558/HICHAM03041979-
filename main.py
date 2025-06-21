@@ -220,6 +220,7 @@ def liste_codebar_lies():
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+
 @app.route('/supprimer_codebar_lie', methods=['POST'])
 def supprimer_codebar_lie():
     user_id = validate_user_id()
@@ -234,36 +235,37 @@ def supprimer_codebar_lie():
         return jsonify({'erreur': 'numero_item et bar2 sont requis'}), 400
 
     try:
+        # Convert numero_item to string to match VARCHAR type of bar in codebar
+        numero_item_str = str(numero_item)
+
         conn = get_conn()
         conn.autocommit = False
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier que l'item existe
-        cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (int(numero_item), user_id))
-        item = cur.fetchone()
-        if not item:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Produit non trouvé'}), 404
+            # Vérifier que l'item existe (numero_item dans item est INTEGER)
+            cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (int(numero_item), user_id))
+            item = cur.fetchone()
+            if not item:
+                raise Exception('Produit non trouvé')
 
-        # Vérifier que le code-barres lié existe
-        cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item, user_id))
-        if not cur.fetchone():
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Code-barres lié non trouvé pour ce produit'}), 404
+            # Vérifier que le code-barres lié existe (bar est VARCHAR)
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
+            if not cur.fetchone():
+                raise Exception('Code-barres lié non trouvé pour ce produit')
 
-        # Supprimer le code-barres lié
-        cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item, user_id))
+            # Supprimer le code-barres lié
+            cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
 
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Code-barres lié supprimé'}), 200
-    except Exception as e:
-        if conn:
+            conn.commit()
+            return jsonify({'statut': 'Code-barres lié supprimé'}), 200
+        except Exception as e:
             conn.rollback()
+            raise e
+        finally:
+            cur.close()
             conn.close()
+    except Exception as e:
         return jsonify({'erreur': str(e)}), 500
 # --- Clients ---
 @app.route('/liste_clients', methods=['GET'])
