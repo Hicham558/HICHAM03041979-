@@ -91,6 +91,33 @@ def calculate_ean13_check_digit(code12):
     check_digit = next_multiple_of_10 - total
     return check_digit
 # --- Nouvelle route pour gérer la configuration de la base de données ---
+@app.route('/get_client_config', methods=['GET'])
+def get_client_config():
+    validation_result = validate_user_and_mode()
+    if isinstance(validation_result, tuple) and len(validation_result) == 2:
+        user_id, _ = validation_result
+    else:
+        return validation_result
+
+    try:
+        conn = get_conn(user_id, use_local=False)  # Connexion à Supabase
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT local_db_host, local_db_name, local_db_user, local_db_password, local_db_port FROM client_config WHERE user_id = %s",
+            (user_id,)
+        )
+        config = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if config:
+            return jsonify(dict(config)), 200
+        else:
+            return jsonify({'erreur': 'Aucune configuration trouvée pour cet utilisateur'}), 404
+    except Exception as e:
+        if 'conn' in locals() and conn:
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 @app.route('/update_client_config', methods=['POST'])
 def update_client_config():
     validation_result = validate_user_and_mode()
