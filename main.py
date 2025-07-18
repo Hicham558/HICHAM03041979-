@@ -113,7 +113,7 @@ def test_public_db():
         conn.close()
         return "Connexion à la base de données publique réussie", 200
     except Exception as e:
-        return jsonify({'erreur': str(e)}), 500)}), 500
+         return jsonify({'erreur': str(e)}), 500
 # --- Fonctions utilitaires ---
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
