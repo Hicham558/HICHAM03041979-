@@ -81,39 +81,37 @@ def index():
         return f'Erreur connexion DB : {e}', 500
 
 
-
-@app.route('/test_public_db', methods=['GET'])
+@app.route('/test_public_db', methods=['POST'])
 def test_public_db():
+    logger.info("Requête reçue pour /test_public_db")
     user_id = request.headers.get('X-User-ID')
     if not user_id:
+        logger.error("X-User-ID header manquant")
         return jsonify({'erreur': 'X-User-ID header is required'}), 400
 
-    # Récupérer les paramètres de connexion depuis les paramètres de requête
-    local_db_host = request.args.get('local_db_host')
-    local_db_name = request.args.get('local_db_name')
-    local_db_user = request.args.get('local_db_user')
-    local_db_password = request.args.get('local_db_password')
-    local_db_port = request.args.get('local_db_port')
-
-    # Vérifier que tous les paramètres requis sont présents
+    data = request.get_json()
     required_fields = ['local_db_host', 'local_db_name', 'local_db_user', 'local_db_password', 'local_db_port']
     for field in required_fields:
-        if not request.args.get(field):
-            return jsonify({'erreur': f'Missing {field} in query parameters'}), 400
+        if not data.get(field):
+            logger.error(f"Paramètre manquant: {field}")
+            return jsonify({'erreur': f'Missing {field} in request body'}), 400
 
     try:
-        # Tester la connexion à la base de données
+        logger.info(f"Tentative de connexion à {data['local_db_host']}:{data['local_db_port']}/{data['local_db_name']}")
         conn = psycopg2.connect(
-            host=local_db_host,
-            database=local_db_name,
-            user=local_db_user,
-            password=local_db_password,
-            port=local_db_port
+            host=data['local_db_host'],
+            database=data['local_db_name'],
+            user=data['local_db_user'],
+            password=data['local_db_password'],
+            port=data['local_db_port'],
+            connect_timeout=5
         )
         conn.close()
+        logger.info("Connexion réussie")
         return "Connexion à la base de données publique réussie", 200
     except Exception as e:
-         return jsonify({'erreur': str(e)}), 500
+        logger.error(f"Échec de la connexion: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
 # --- Fonctions utilitaires ---
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
