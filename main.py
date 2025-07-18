@@ -81,30 +81,38 @@ def index():
         return f'Erreur connexion DB : {e}', 500
 
 
+from flask import Flask, request, jsonify
+import psycopg2
+
+app = Flask(__name__)
+
 @app.route('/test_public_db', methods=['GET'])
 def test_public_db():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'X-User-ID header is required'}), 400
 
+    # Récupérer les paramètres de connexion depuis les paramètres de requête
+    local_db_host = request.args.get('local_db_host')
+    local_db_name = request.args.get('local_db_name')
+    local_db_user = request.args.get('local_db_user')
+    local_db_password = request.args.get('local_db_password')
+    local_db_port = request.args.get('local_db_port')
+
+    # Vérifier que tous les paramètres requis sont présents
+    required_fields = ['local_db_host', 'local_db_name', 'local_db_user', 'local_db_password', 'local_db_port']
+    for field in required_fields:
+        if not request.args.get(field):
+            return jsonify({'erreur': f'Missing {field} in query parameters'}), 400
+
     try:
-        supabase = create_supabase_client()
-        response = supabase.table('client_config').select('*').eq('user_id', user_id).execute()
-        if not response.data:
-            return jsonify({'erreur': 'No configuration found for user'}), 404
-
-        config = response.data[0]
-        required_fields = ['local_db_host', 'local_db_name', 'local_db_user', 'local_db_password', 'local_db_port']
-        for field in required_fields:
-            if not config.get(field):
-                return jsonify({'erreur': f'Missing {field} in client configuration'}), 400
-
+        # Tester la connexion à la base de données
         conn = psycopg2.connect(
-            host=config['local_db_host'],
-            database=config['local_db_name'],
-            user=config['local_db_user'],
-            password=config['local_db_password'],
-            port=config['local_db_port']
+            host=local_db_host,
+            database=local_db_name,
+            user=local_db_user,
+            password=local_db_password,
+            port=local_db_port
         )
         conn.close()
         return "Connexion à la base de données publique réussie", 200
