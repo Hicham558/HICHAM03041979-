@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 def get_local_db_config(user_id):
     try:
         # Connexion à Supabase pour récupérer la config locale
-        supabase_conn = get_conn(user_id, False)
+        supabase_conn = get_conn(user_id)
         cur = supabase_conn.cursor(cursor_factory=RealDictCursor)
         
         cur.execute("""
@@ -39,55 +38,56 @@ def get_local_db_config(user_id):
         return None
 
 # Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None, use_local=False):
-    if not use_local or not user_id:
-        # Connexion par défaut à Supabase
-        url = os.environ['DATABASE_URL']
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return psycopg2.connect(url, sslmode='require')
-    else:
-        # Connexion à la base locale du client
-        config = get_local_db_config(user_id)
-        if not config:
-            raise Exception("Configuration de base de données locale non trouvée")
-        
-        return psycopg2.connect(
-            host=config['local_db_host'],
-            database=config['local_db_name'],
-            user=config['local_db_user'],
-            password=config['local_db_password'],
-            port=config['local_db_port']
-        )
+def get_conn(user_id=None):
+    config = get_local_db_config(user_id) if user_id else None
+    if config and config['local_db_host']:
+        # Connexion à la base locale si local_db_host est non vide
+        try:
+            return psycopg2.connect(
+                host=config['local_db_host'],
+                database=config['local_db_name'],
+                user=config['local_db_user'],
+                password=config['local_db_password'],
+                port=config['local_db_port']
+            )
+        except Exception as e:
+            logger.warning(f"Échec de la connexion locale pour user_id {user_id}: {str(e)}. Retour à Supabase.")
+            # Si la connexion locale échoue, se rabattre sur Supabase
+            pass
+    
+    # Connexion par défaut à Supabase
+    url = os.environ['DATABASE_URL']
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(url, sslmode='require')
 
-# Vérification de l'utilisateur et du mode de connexion
-def validate_user_and_mode():
+# Vérification de l'utilisateur
+def validate_user():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    
-    use_local = request.headers.get('X-Use-Local', 'false').lower() == 'true'
-    return user_id, use_local
+    return user_id
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
 def index():
     try:
-        # Par défaut, se connecte à Supabase
-        conn = get_conn()
+        user_id = validate_user()
+        if isinstance(user_id, tuple):
+            return user_id  # Retourne l'erreur si validation échoue
+        conn = get_conn(user_id)
         conn.close()
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
-        return f'Erreur connexion DB : {e}', 500
+        return jsonify({'erreur': f'Erreur connexion DB : {str(e)}'}), 500
 
-
+# Route pour tester la connexion à une base de données publique
 @app.route('/test_public_db', methods=['POST'])
 def test_public_db():
     logger.info("Requête reçue pour /test_public_db")
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        logger.error("X-User-ID header manquant")
-        return jsonify({'erreur': 'X-User-ID header is required'}), 400
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id  # Retourne l'erreur si validation échoue
 
     data = request.get_json()
     required_fields = ['local_db_host', 'local_db_name', 'local_db_user', 'local_db_password', 'local_db_port']
@@ -112,6 +112,7 @@ def test_public_db():
     except Exception as e:
         logger.error(f"Échec de la connexion: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
 # --- Fonctions utilitaires ---
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
@@ -122,20 +123,19 @@ def calculate_ean13_check_digit(code12):
     next_multiple_of_10 = (total + 9) // 10 * 10
     check_digit = next_multiple_of_10 - total
     return check_digit
-# --- Nouvelle route pour gérer la configuration de la base de données ---
+
+# --- Route pour gérer la configuration de la base de données ---
 @app.route('/get_client_config', methods=['GET'])
 def get_client_config():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, _ = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local=False)  # Connexion à Supabase
+        conn = get_conn(user_id)  # Utilise la logique basée sur local_db_host
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
-            "SELECT local_db_host, local_db_name, local_db_user, local_db_password, local_db_port FROM client_config WHERE user_id = %s",
+            "SELECT local_db_host, local_db_name, local_db_user, local_db_password, local_db_port, use_local_db FROM client_config WHERE user_id = %s",
             (user_id,)
         )
         config = cur.fetchone()
@@ -150,27 +150,24 @@ def get_client_config():
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+
 @app.route('/update_client_config', methods=['POST'])
 def update_client_config():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, _ = validation_result  # use_local n'est pas nécessaire ici, car on modifie Supabase
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
-    local_db_host = data.get('local_db_host')
+    use_local_db = data.get('use_local_db', False)
+    local_db_host = data.get('local_db_host', '')
     local_db_name = data.get('local_db_name', 'restocafee')
     local_db_user = data.get('local_db_user', 'postgres')
     local_db_password = data.get('local_db_password', 'masterkey')
     local_db_port = data.get('local_db_port', '5432')
 
-    if not local_db_host:
-        return jsonify({'erreur': 'L\'hôte de la base de données locale est requis'}), 400
-
     try:
         # Toujours utiliser Supabase pour cette opération
-        conn = get_conn(user_id, use_local=False)
+        conn = get_conn()  # Connexion à Supabase sans user_id
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -183,22 +180,22 @@ def update_client_config():
             cur.execute(
                 """
                 UPDATE client_config 
-                SET local_db_host = %s, local_db_name = %s, local_db_user = %s, 
-                    local_db_password = %s, local_db_port = %s
+                SET use_local_db = %s, local_db_host = %s, local_db_name = %s, 
+                    local_db_user = %s, local_db_password = %s, local_db_port = %s
                 WHERE user_id = %s
                 RETURNING user_id
                 """,
-                (local_db_host, local_db_name, local_db_user, local_db_password, local_db_port, user_id)
+                (use_local_db, local_db_host, local_db_name, local_db_user, local_db_password, local_db_port, user_id)
             )
         else:
             # Insertion
             cur.execute(
                 """
-                INSERT INTO client_config (user_id, local_db_host, local_db_name, local_db_user, local_db_password, local_db_port)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                INSERT INTO client_config (user_id, use_local_db, local_db_host, local_db_name, local_db_user, local_db_password, local_db_port)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING user_id
                 """,
-                (user_id, local_db_host, local_db_name, local_db_user, local_db_password, local_db_port)
+                (user_id, use_local_db, local_db_host, local_db_name, local_db_user, local_db_password, local_db_port)
             )
 
         result = cur.fetchone()
