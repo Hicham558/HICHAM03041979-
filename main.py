@@ -508,19 +508,23 @@ def supprimer_codebar_lie():
         return jsonify({'erreur': str(e)}), 500
 
 # --- Clients ---
+# ... (autres imports et code existant restent inchangés)
+
 @app.route('/liste_clients', methods=['GET'])
 def liste_clients():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        
+        if is_local:
             cur.execute("SELECT numero_clt, nom, solde, reference, contact, adresse FROM client ORDER BY nom")
         else:
             cur.execute("SELECT numero_clt, nom, solde, reference, contact, adresse FROM client WHERE user_id = %s ORDER BY nom", (user_id,))
@@ -531,19 +535,61 @@ def liste_clients():
 
         clients = [
             {
-                'numero_clt': row[0],
-                'nom': row[1],
-                'solde': float(row[2]) if row[2] is not None else 0.0,
-                'reference': row[3],
-                'contact': row[4] or '',
-                'adresse': row[5] or ''
+                'numero_clt': row['numero_clt'],
+                'nom': row['nom'],
+                'solde': float(row['solde']) if row['solde'] is not None else 0.0,
+                'reference': row['reference'],
+                'contact': row['contact'] or '',
+                'adresse': row['adresse'] or ''
             }
             for row in rows
         ]
         return jsonify(clients)
     except Exception as e:
+        if 'conn' in locals() and conn:
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+@app.route('/liste_produits', methods=['GET'])
+def liste_produits():
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        
+        if is_local:
+            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation")
+        else:
+            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        produits = [
+            {
+                'NUMERO_ITEM': row['numero_item'],
+                'BAR': row['bar'],
+                'DESIGNATION': row['designation'],
+                'QTE': row['qte'],
+                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
+                'PRIXBA': row['prixba'] or '0.00',
+                'REF': row['ref'] or ''
+            }
+            for row in rows
+        ]
+        return jsonify(produits)
+    except Exception as e:
+        if 'conn' in locals() and conn:
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
 @app.route('/ajouter_client', methods=['POST'])
 def ajouter_client():
     validation_result = validate_user_and_mode()
@@ -662,19 +708,22 @@ def supprimer_client(numero_clt):
         return jsonify({'erreur': str(e)}), 500
 
 # --- Fournisseurs ---
+
 @app.route('/liste_fournisseurs', methods=['GET'])
 def liste_fournisseurs():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        
+        if is_local:
             cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur ORDER BY nom")
         else:
             cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur WHERE user_id = %s ORDER BY nom", (user_id,))
@@ -685,19 +734,20 @@ def liste_fournisseurs():
 
         fournisseurs = [
             {
-                'numero_fou': row[0],
-                'nom': row[1],
-                'solde': float(row[2]) if row[2] is not None else 0.0,
-                'reference': row[3],
-                'contact': row[4] or '',
-                'adresse': row[5] or ''
+                'numero_fou': row['numero_fou'],
+                'nom': row['nom'],
+                'solde': float(row['solde']) if row['solde'] is not None else 0.0,
+                'reference': row['reference'],
+                'contact': row['contact'] or '',
+                'adresse': row['adresse'] or ''
             }
             for row in rows
         ]
         return jsonify(fournisseurs)
     except Exception as e:
+        if 'conn' in locals() and conn:
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
-
 @app.route('/ajouter_fournisseur', methods=['POST'])
 def ajouter_fournisseur():
     validation_result = validate_user_and_mode()
@@ -816,42 +866,7 @@ def supprimer_fournisseur(numero_fou):
         return jsonify({'erreur': str(e)}), 500
 
 # --- Produits ---
-@app.route('/liste_produits', methods=['GET'])
-def liste_produits():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
 
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation")
-        else:
-            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        produits = [
-            {
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
-                'QTE': row[3],
-                'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00',
-                'REF': row[6] or ''
-            }
-            for row in rows
-        ]
-        return jsonify(produits)
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
