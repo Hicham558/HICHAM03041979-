@@ -557,22 +557,25 @@ def liste_produits():
         return user_id
 
     try:
+        logger.debug(f"Tentative de récupération des produits pour user_id: {user_id}")
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
         # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
         
         if is_local:
+            logger.debug("Exécution de la requête SQL pour la base locale")
             cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation")
         else:
+            logger.debug(f"Exécution de la requête SQL pour Supabase avec user_id: {user_id}")
             cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
         
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
+        logger.debug(f"Nombre de produits trouvés: {len(rows)}")
+        
         produits = [
             {
                 'NUMERO_ITEM': row['numero_item'],
@@ -585,8 +588,13 @@ def liste_produits():
             }
             for row in rows
         ]
+        
+        cur.close()
+        conn.close()
+        logger.debug("Connexion fermée, retour des produits")
         return jsonify(produits)
     except Exception as e:
+        logger.error(f"Erreur dans liste_produits: {str(e)}")
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
