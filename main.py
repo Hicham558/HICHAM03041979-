@@ -1530,20 +1530,25 @@ def profit_by_date():
         if conn:
             cur.close()
             conn.close()
+# ... (autres imports et code existant restent inchangés)
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     period = request.args.get('period', 'day')
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Début de la requête dashboard pour user_id: {user_id}, période: {period}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
         # Define the date range
         if period == 'week':
@@ -1569,7 +1574,7 @@ def dashboard():
         """
         params = [date_start, date_end]
 
-        if not use_local:
+        if not is_local:
             query_kpi = query_kpi.format(user_condition="c.user_id = %s AND a.user_id = %s AND i.user_id = %s")
             params.insert(0, user_id)
             params.insert(1, user_id)
@@ -1577,16 +1582,18 @@ def dashboard():
         else:
             query_kpi = query_kpi.format(user_condition="1=1")
 
+        logger.debug(f"Exécution de la requête KPI: {query_kpi % tuple(params)}")
         cur.execute(query_kpi, params)
         kpi_data = cur.fetchone()
 
         # Query for low stock items
-        if use_local:
+        if is_local:
             cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE qte < 10")
         else:
             cur.execute("SELECT COUNT(*) AS low_stock FROM item WHERE qte < 10 AND user_id = %s", (user_id,))
         
         low_stock_count = cur.fetchone()['low_stock']
+        logger.debug(f"Nombre d'articles en stock faible: {low_stock_count}")
 
         # Query for top client
         query_top_client = """
@@ -1605,13 +1612,14 @@ def dashboard():
         """
         params_top = [date_start, date_end]
 
-        if not use_local:
+        if not is_local:
             query_top_client = query_top_client.format(user_condition="c.user_id = %s AND a.user_id = %s")
             params_top.insert(0, user_id)
             params_top.insert(1, user_id)
         else:
             query_top_client = query_top_client.format(user_condition="1=1")
 
+        logger.debug(f"Exécution de la requête top client: {query_top_client % tuple(params_top)}")
         cur.execute(query_top_client, params_top)
         top_client = cur.fetchone()
 
@@ -1630,13 +1638,14 @@ def dashboard():
         """
         params_chart = [date_start, date_end]
 
-        if not use_local:
+        if not is_local:
             query_chart = query_chart.format(user_condition="c.user_id = %s AND a.user_id = %s")
             params_chart.insert(0, user_id)
             params_chart.insert(1, user_id)
         else:
             query_chart = query_chart.format(user_condition="1=1")
 
+        logger.debug(f"Exécution de la requête chart: {query_chart % tuple(params_chart)}")
         cur.execute(query_chart, params_chart)
         chart_data = cur.fetchall()
 
@@ -1651,7 +1660,7 @@ def dashboard():
             chart_values.append(float(daily_ca))
             current_date += timedelta(days=1)
 
-        return jsonify({
+        response = {
             'total_ca': float(kpi_data['total_ca'] or 0),
             'total_profit': float(kpi_data['total_profit'] or 0),
             'sales_count': int(kpi_data['sales_count'] or 0),
@@ -1664,49 +1673,61 @@ def dashboard():
                 'labels': chart_labels,
                 'values': chart_values
             }
-        }), 200
+        }
+        logger.debug(f"Réponse dashboard: {response}")
+        return jsonify(response), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans dashboard: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
-# --- Utilisateurs ---
 @app.route('/liste_utilisateurs', methods=['GET'])
 def liste_utilisateurs():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Tentative de récupération des utilisateurs pour user_id: {user_id}")
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+        
+        if is_local:
             cur.execute("SELECT numero_util, nom, statue FROM utilisateur ORDER BY nom")
         else:
             cur.execute("SELECT numero_util, nom, statue FROM utilisateur WHERE user_id = %s ORDER BY nom", (user_id,))
         
         rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
+        logger.debug(f"Nombre d'utilisateurs trouvés: {len(rows)}")
+        
         utilisateurs = [
             {
-                'numero': row[0],
-                'nom': row[1],
-                'statut': row[2]
+                'numero': row['numero_util'],
+                'nom': row['nom'],
+                'statut': row['statue']
             }
             for row in rows
         ]
+        
+        cur.close()
+        conn.close()
+        logger.debug("Connexion fermée, retour des utilisateurs")
         return jsonify(utilisateurs)
     except Exception as e:
+        logger.error(f"Erreur dans liste_utilisateurs: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
-
 @app.route('/ajouter_utilisateur', methods=['POST'])
 def ajouter_utilisateur():
     validation_result = validate_user_and_mode()
