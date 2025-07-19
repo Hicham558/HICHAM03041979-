@@ -52,13 +52,20 @@ def get_local_db_config(user_id):
 		
 # Fonction pour obtenir une connexion (Supabase ou locale)
 def get_conn(user_id=None):
+    # 1. Connexion par défaut à Supabase si pas d'user_id
     if not user_id:
-        return connect_to_supabase()
+        conn = connect_to_supabase()
+        conn.has_user_id = True  # Marqueur spécifique
+        return conn
     
+    # 2. Vérifier si une config locale existe
     config = get_local_db_config(user_id)
     if not config:
-        return connect_to_supabase()
+        conn = connect_to_supabase()
+        conn.has_user_id = True
+        return conn
     
+    # 3. Essai de connexion locale
     try:
         conn = psycopg2.connect(
             host=config['local_db_host'],
@@ -66,25 +73,16 @@ def get_conn(user_id=None):
             database=config['local_db_name'],
             user=config['local_db_user'],
             password=config['local_db_password'],
-            connect_timeout=3  # Timeout réduit pour fail-fast
+            connect_timeout=3
         )
-        conn.is_local = True
-        logger.info(f"Connexion LOCALE réussie à {config['local_db_host']}")
+        conn.has_user_id = False  # Marqueur crucial
         return conn
     except Exception as e:
-        logger.error(f"Échec connexion LOCALE: {str(e)}")
-        logger.error(f"Config utilisée: {config}")  # Log la config problématique
-        return connect_to_supabase()  # Fallback
+        logger.error(f"Échec connexion locale: {str(e)}")
+        conn = connect_to_supabase()
+        conn.has_user_id = True
+        return conn
 	    
-# Vérification de l'utilisateur et du mode de connexion
-def validate_user_and_mode():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    
-    # On laisse get_conn() déterminer automatiquement si on doit utiliser la base locale
-    return user_id, None
-
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
 def index():
