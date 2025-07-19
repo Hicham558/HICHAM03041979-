@@ -837,58 +837,53 @@ def supprimer_fournisseur(numero_fou):
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    # Validation de l'utilisateur (sans forcer le mode)
     user_id = request.headers.get('X-User-ID')
     if not user_id:
-        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
+        return jsonify({'erreur': 'Authentification requise'}), 401
 
     try:
-        # Connexion avec switch automatique
         conn = get_conn(user_id)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor()
         
-        # Détection automatique du mode
-        is_local = getattr(conn, 'is_local', False)  # Ajoutez cette propriété dans get_conn()
-        
-        # Requête adaptée au mode
-        if is_local:
-            # Mode local - pas de filtre user_id
-            cur.execute("""
-                SELECT numero_item, bar, designation, qte, prix, prixba, ref 
-                FROM item 
-                ORDER BY designation
-            """)
-        else:
-            # Mode Supabase - avec filtre user_id
-            cur.execute("""
-                SELECT numero_item, bar, designation, qte, prix, prixba, ref 
-                FROM item 
-                WHERE user_id = %s 
-                ORDER BY designation
-            """, (user_id,))
-        
-        produits = []
-        for row in cur:
-            produits.append({
-                'NUMERO_ITEM': row['numero_item'],
-                'BAR': row['bar'],
-                'DESIGNATION': row['designation'],
-                'QTE': row['qte'],
-                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
-                'PRIXBA': row['prixba'] or '0.00',
-                'REF': row['ref'] or ''
-            })
+        # Debug: Ajouter le type de connexion dans les logs
+        logger.info(f"Mode {'LOCAL' if getattr(conn, 'is_local', False) else 'SUPABASE'} pour user {user_id}")
 
+        if getattr(conn, 'is_local', False):
+            query = "SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation"
+            params = ()
+        else:
+            query = "SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation"
+            params = (user_id,)
+
+        cur.execute(query, params)
+        produits = [
+            {
+                'NUMERO_ITEM': row[0],
+                'BAR': row[1] or '',
+                'DESIGNATION': row[2] or '',
+                'QTE': float(row[3]) if row[3] is not None else 0.0,
+                'PRIX': float(row[4]) if row[4] is not None else 0.0,
+                'PRIXBA': str(row[5]) if row[5] is not None else '0.00',
+                'REF': str(row[6]) if row[6] is not None else ''
+            }
+            for row in cur.fetchall()
+        ]
+        
         return jsonify(produits)
 
+    except psycopg2.OperationalError as oe:
+        logger.error(f"Erreur opérationnelle DB: {str(oe)}")
+        return jsonify({'erreur': 'Problème de connexion à la base de données', 'details': str(oe)}), 503
+    except psycopg2.Error as pe:
+        logger.error(f"Erreur PostgreSQL: {str(pe)}")
+        return jsonify({'erreur': 'Erreur base de données', 'details': str(pe)}), 500
     except Exception as e:
-        logger.error(f"Erreur liste_produits: {str(e)}")
-        return jsonify({'erreur': 'Erreur serveur lors de la récupération des produits'}), 500
-    
+        logger.error(f"Erreur inattendue: {str(e)}")
+        return jsonify({'erreur': 'Erreur serveur'}), 500
     finally:
         if 'cur' in locals(): cur.close()
         if 'conn' in locals(): conn.close()
-
+		
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
     validation_result = validate_user_and_mode()
