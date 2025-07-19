@@ -18,71 +18,57 @@ logger = logging.getLogger(__name__)
 # Fonction pour obtenir la configuration de la base de données locale d'un client
 def get_local_db_config(user_id):
     try:
-        # D'abord vérifier si une config locale existe
-        supabase_conn = psycopg2.connect(os.environ['DATABASE_URL'])
-        cur = supabase_conn.cursor()
+        # Connexion à Supabase pour récupérer la config locale
+        supabase_conn = get_conn(user_id, False)
+        cur = supabase_conn.cursor(cursor_factory=RealDictCursor)
         
         cur.execute("""
-            SELECT local_db_host, local_db_port, local_db_name, 
-                   local_db_user, local_db_password
+            SELECT local_db_host, local_db_name, local_db_user, 
+                   local_db_password, local_db_port 
             FROM client_config 
-            WHERE user_id = %s 
-            AND local_db_host IS NOT NULL
-            AND local_db_name IS NOT NULL
+            WHERE user_id = %s
         """, (user_id,))
         
         config = cur.fetchone()
+        cur.close()
+        supabase_conn.close()
         
-        if config:
-            return {
-                'local_db_host': config[0],
-                'local_db_port': config[1],
-                'local_db_name': config[2],
-                'local_db_user': config[3],
-                'local_db_password': config[4]
-            }
-        return None
-        
+        return config if config else None
     except Exception as e:
-        logger.error(f"Erreur vérification config locale: {str(e)}")
+        logger.error(f"Erreur lors de la récupération de la config locale: {str(e)}")
         return None
-    finally:
-        if 'cur' in locals(): cur.close()
-        if 'supabase_conn' in locals(): supabase_conn.close()
-		
+
 # Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None):
-    # 1. Connexion par défaut à Supabase si pas d'user_id
-    if not user_id:
-        conn = connect_to_supabase()
-        conn.has_user_id = True  # Marqueur spécifique
-        return conn
-    
-    # 2. Vérifier si une config locale existe
-    config = get_local_db_config(user_id)
-    if not config:
-        conn = connect_to_supabase()
-        conn.has_user_id = True
-        return conn
-    
-    # 3. Essai de connexion locale
-    try:
-        conn = psycopg2.connect(
+def get_conn(user_id=None, use_local=False):
+    if not use_local or not user_id:
+        # Connexion par défaut à Supabase
+        url = os.environ['DATABASE_URL']
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url, sslmode='require')
+    else:
+        # Connexion à la base locale du client
+        config = get_local_db_config(user_id)
+        if not config:
+            raise Exception("Configuration de base de données locale non trouvée")
+        
+        return psycopg2.connect(
             host=config['local_db_host'],
-            port=config['local_db_port'],
             database=config['local_db_name'],
             user=config['local_db_user'],
             password=config['local_db_password'],
-            connect_timeout=3
+            port=config['local_db_port']
         )
-        conn.has_user_id = False  # Marqueur crucial
-        return conn
-    except Exception as e:
-        logger.error(f"Échec connexion locale: {str(e)}")
-        conn = connect_to_supabase()
-        conn.has_user_id = True
-        return conn
-	    
+
+# Vérification de l'utilisateur et du mode de connexion
+def validate_user_and_mode():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
+    
+    use_local = request.headers.get('X-Use-Local', 'false').lower() == 'true'
+    return user_id, use_local
+
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
 def index():
@@ -835,51 +821,41 @@ def supprimer_fournisseur(numero_fou):
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        return jsonify({'erreur': 'Authentification requise'}), 401
+    validation_result = validate_user_and_mode()
+    if isinstance(validation_result, tuple) and len(validation_result) == 2:
+        user_id, use_local = validation_result
+    else:
+        return validation_result
 
     try:
-        conn = get_conn(user_id)
+        conn = get_conn(user_id, use_local)
         cur = conn.cursor()
         
-        # Construction dynamique de la requête
-        base_query = """
-            SELECT numero_item, bar, designation, qte, prix, prixba, ref 
-            FROM item
-        """
-        
-        if getattr(conn, 'has_user_id', True):  # Par défaut True pour sécurité
-            base_query += " WHERE user_id = %s"
-            params = (user_id,)
+        if use_local:
+            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation")
         else:
-            params = ()
+            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
         
-        base_query += " ORDER BY designation"
-        cur.execute(base_query, params)
-        
-        # Mapping des résultats
-        produits = []
-        for row in cur:
-            produits.append({
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        produits = [
+            {
                 'NUMERO_ITEM': row[0],
-                'BAR': row[1] or '',
-                'DESIGNATION': row[2] or '',
-                'QTE': float(row[3]) if row[3] is not None else 0.0,
+                'BAR': row[1],
+                'DESIGNATION': row[2],
+                'QTE': row[3],
                 'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': str(row[5]) if row[5] is not None else '0.00',
-                'REF': str(row[6]) if row[6] is not None else ''
-            })
-
+                'PRIXBA': row[5] or '0.00',
+                'REF': row[6] or ''
+            }
+            for row in rows
+        ]
         return jsonify(produits)
-
     except Exception as e:
-        logger.error(f"Erreur liste_produits: {str(e)}")
-        return jsonify({'erreur': 'Erreur serveur'}), 500
-    finally:
-        if 'cur' in locals(): cur.close()
-        if 'conn' in locals(): conn.close()
-		
+        return jsonify({'erreur': str(e)}), 500
+
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
     validation_result = validate_user_and_mode()
