@@ -52,35 +52,30 @@ def get_local_db_config(user_id):
 		
 # Fonction pour obtenir une connexion (Supabase ou locale)
 def get_conn(user_id=None):
-    # Si pas d'user_id -> forcément Supabase
     if not user_id:
         return connect_to_supabase()
     
-    # Vérifier si on doit switcher en local
     config = get_local_db_config(user_id)
-    if config:
-        try:
-            conn = psycopg2.connect(
-                host=config['local_db_host'],
-                port=config['local_db_port'],
-                database=config['local_db_name'],
-                user=config['local_db_user'],
-                password=config['local_db_password']
-            )
-            logger.info(f"Connexion LOCALE établie pour user {user_id}")
-            return conn
-        except Exception as e:
-            logger.error(f"Erreur connexion locale, fallback à Supabase: {str(e)}")
+    if not config:
+        return connect_to_supabase()
     
-    # Fallback à Supabase si échec ou config absente
-    return connect_to_supabase()
-
-def connect_to_supabase():
-    url = os.environ['DATABASE_URL']
-    if url.startswith("postgres://"):
-        url = url.replace("postgres://", "postgresql://", 1)
-    return psycopg2.connect(url, sslmode='require')
-	
+    try:
+        conn = psycopg2.connect(
+            host=config['local_db_host'],
+            port=config['local_db_port'],
+            database=config['local_db_name'],
+            user=config['local_db_user'],
+            password=config['local_db_password'],
+            connect_timeout=3  # Timeout réduit pour fail-fast
+        )
+        conn.is_local = True
+        logger.info(f"Connexion LOCALE réussie à {config['local_db_host']}")
+        return conn
+    except Exception as e:
+        logger.error(f"Échec connexion LOCALE: {str(e)}")
+        logger.error(f"Config utilisée: {config}")  # Log la config problématique
+        return connect_to_supabase()  # Fallback
+	    
 # Vérification de l'utilisateur et du mode de connexion
 def validate_user_and_mode():
     user_id = request.headers.get('X-User-ID')
