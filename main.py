@@ -842,40 +842,57 @@ def supprimer_fournisseur(numero_fou):
 # --- Produits ---
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    # Validation de l'utilisateur (sans forcer le mode)
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        # Connexion avec switch automatique
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
-            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation")
+        # Détection automatique du mode
+        is_local = getattr(conn, 'is_local', False)  # Ajoutez cette propriété dans get_conn()
+        
+        # Requête adaptée au mode
+        if is_local:
+            # Mode local - pas de filtre user_id
+            cur.execute("""
+                SELECT numero_item, bar, designation, qte, prix, prixba, ref 
+                FROM item 
+                ORDER BY designation
+            """)
         else:
-            cur.execute("SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation", (user_id,))
+            # Mode Supabase - avec filtre user_id
+            cur.execute("""
+                SELECT numero_item, bar, designation, qte, prix, prixba, ref 
+                FROM item 
+                WHERE user_id = %s 
+                ORDER BY designation
+            """, (user_id,))
         
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
+        produits = []
+        for row in cur:
+            produits.append({
+                'NUMERO_ITEM': row['numero_item'],
+                'BAR': row['bar'],
+                'DESIGNATION': row['designation'],
+                'QTE': row['qte'],
+                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
+                'PRIXBA': row['prixba'] or '0.00',
+                'REF': row['ref'] or ''
+            })
 
-        produits = [
-            {
-                'NUMERO_ITEM': row[0],
-                'BAR': row[1],
-                'DESIGNATION': row[2],
-                'QTE': row[3],
-                'PRIX': float(row[4]) if row[4] is not None else 0.0,
-                'PRIXBA': row[5] or '0.00',
-                'REF': row[6] or ''
-            }
-            for row in rows
-        ]
         return jsonify(produits)
+
     except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
+        logger.error(f"Erreur liste_produits: {str(e)}")
+        return jsonify({'erreur': 'Erreur serveur lors de la récupération des produits'}), 500
+    
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'conn' in locals(): conn.close()
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
