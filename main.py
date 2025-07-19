@@ -18,57 +18,69 @@ logger = logging.getLogger(__name__)
 # Fonction pour obtenir la configuration de la base de données locale d'un client
 def get_local_db_config(user_id):
     try:
-        # Connexion à Supabase pour récupérer la config locale
-        supabase_conn = get_conn(user_id, False)
-        cur = supabase_conn.cursor(cursor_factory=RealDictCursor)
+        # D'abord vérifier si une config locale existe
+        supabase_conn = psycopg2.connect(os.environ['DATABASE_URL'])
+        cur = supabase_conn.cursor()
         
         cur.execute("""
-            SELECT local_db_host, local_db_name, local_db_user, 
-                   local_db_password, local_db_port 
+            SELECT local_db_host, local_db_port, local_db_name, 
+                   local_db_user, local_db_password
             FROM client_config 
-            WHERE user_id = %s
+            WHERE user_id = %s 
+            AND local_db_host IS NOT NULL
+            AND local_db_name IS NOT NULL
         """, (user_id,))
         
         config = cur.fetchone()
-        cur.close()
-        supabase_conn.close()
         
-        return config if config else None
-    except Exception as e:
-        logger.error(f"Erreur lors de la récupération de la config locale: {str(e)}")
+        if config:
+            return {
+                'local_db_host': config[0],
+                'local_db_port': config[1],
+                'local_db_name': config[2],
+                'local_db_user': config[3],
+                'local_db_password': config[4]
+            }
         return None
-
-# Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None, use_local=None):
-    # Si use_local n'est pas spécifié, on détermine automatiquement
-    if use_local is None:
-        if not user_id:
-            # Pas d'user_id -> Supabase
-            use_local = False
-        else:
-            # Vérifier si cet user a une config locale
-            config = get_local_db_config(user_id)
-            use_local = config is not None
-
-    if not use_local:
-        # Connexion par défaut à Supabase
-        url = os.environ['DATABASE_URL']
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return psycopg2.connect(url, sslmode='require')
-    else:
-        # Connexion à la base locale du client
-        config = get_local_db_config(user_id)
-        if not config:
-            raise Exception("Configuration de base de données locale non trouvée")
         
-        return psycopg2.connect(
-            host=config['local_db_host'],
-            database=config['local_db_name'],
-            user=config['local_db_user'],
-            password=config['local_db_password'],
-            port=config['local_db_port']
-        )
+    except Exception as e:
+        logger.error(f"Erreur vérification config locale: {str(e)}")
+        return None
+    finally:
+        if 'cur' in locals(): cur.close()
+        if 'supabase_conn' in locals(): supabase_conn.close()
+		
+# Fonction pour obtenir une connexion (Supabase ou locale)
+def get_conn(user_id=None):
+    # Si pas d'user_id -> forcément Supabase
+    if not user_id:
+        return connect_to_supabase()
+    
+    # Vérifier si on doit switcher en local
+    config = get_local_db_config(user_id)
+    if config:
+        try:
+            conn = psycopg2.connect(
+                host=config['local_db_host'],
+                port=config['local_db_port'],
+                database=config['local_db_name'],
+                user=config['local_db_user'],
+                password=config['local_db_password']
+            )
+            logger.info(f"Connexion LOCALE établie pour user {user_id}")
+            return conn
+        except Exception as e:
+            logger.error(f"Erreur connexion locale, fallback à Supabase: {str(e)}")
+    
+    # Fallback à Supabase si échec ou config absente
+    return connect_to_supabase()
+
+def connect_to_supabase():
+    url = os.environ['DATABASE_URL']
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(url, sslmode='require')
+	
 # Vérification de l'utilisateur et du mode de connexion
 def validate_user_and_mode():
     user_id = request.headers.get('X-User-ID')
