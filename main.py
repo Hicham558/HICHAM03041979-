@@ -39,8 +39,18 @@ def get_local_db_config(user_id):
         return None
 
 # Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None, use_local=False):
-    if not use_local or not user_id:
+def get_conn(user_id=None, use_local=None):
+    # Si use_local n'est pas spécifié, on détermine automatiquement
+    if use_local is None:
+        if not user_id:
+            # Pas d'user_id -> Supabase
+            use_local = False
+        else:
+            # Vérifier si cet user a une config locale
+            config = get_local_db_config(user_id)
+            use_local = config is not None
+
+    if not use_local:
         # Connexion par défaut à Supabase
         url = os.environ['DATABASE_URL']
         if url.startswith("postgres://"):
@@ -59,15 +69,14 @@ def get_conn(user_id=None, use_local=False):
             password=config['local_db_password'],
             port=config['local_db_port']
         )
-
 # Vérification de l'utilisateur et du mode de connexion
 def validate_user_and_mode():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
     
-    use_local = request.headers.get('X-Use-Local', 'false').lower() == 'true'
-    return user_id, use_local
+    # On laisse get_conn() déterminer automatiquement si on doit utiliser la base locale
+    return user_id, None
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
