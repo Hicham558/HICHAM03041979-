@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def get_local_db_config(user_id):
     try:
         # Connexion à Supabase pour récupérer la config locale
-        supabase_conn = get_conn(user_id, False)
+        supabase_conn = get_conn()  # Toujours Supabase pour cette requête
         cur = supabase_conn.cursor(cursor_factory=RealDictCursor)
         
         cur.execute("""
@@ -39,55 +39,55 @@ def get_local_db_config(user_id):
         return None
 
 # Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None, use_local=False):
-    if not use_local or not user_id:
-        # Connexion par défaut à Supabase
-        url = os.environ['DATABASE_URL']
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return psycopg2.connect(url, sslmode='require')
-    else:
-        # Connexion à la base locale du client
+def get_conn(user_id=None):
+    if user_id:
         config = get_local_db_config(user_id)
-        if not config:
-            raise Exception("Configuration de base de données locale non trouvée")
-        
-        return psycopg2.connect(
-            host=config['local_db_host'],
-            database=config['local_db_name'],
-            user=config['local_db_user'],
-            password=config['local_db_password'],
-            port=config['local_db_port']
-        )
+        if config and config['local_db_host']:
+            try:
+                # Connexion à la base locale du client
+                return psycopg2.connect(
+                    host=config['local_db_host'],
+                    database=config['local_db_name'],
+                    user=config['local_db_user'],
+                    password=config['local_db_password'],
+                    port=config['local_db_port']
+                )
+            except Exception as e:
+                logger.warning(f"Échec de la connexion locale pour user_id {user_id}: {str(e)}. Retour à Supabase.")
+    
+    # Connexion par défaut à Supabase
+    url = os.environ['DATABASE_URL']
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return psycopg2.connect(url, sslmode='require')
 
-# Vérification de l'utilisateur et du mode de connexion
-def validate_user_and_mode():
+# Vérification de l'utilisateur
+def validate_user():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    
-    use_local = request.headers.get('X-Use-Local', 'false').lower() == 'true'
-    return user_id, use_local
+    return user_id
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
 def index():
     try:
-        # Par défaut, se connecte à Supabase
-        conn = get_conn()
+        user_id = validate_user()
+        if isinstance(user_id, tuple):
+            return user_id
+        conn = get_conn(user_id)
         conn.close()
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
-        return f'Erreur connexion DB : {e}', 500
+        return jsonify({'erreur': f'Erreur connexion DB : {str(e)}'}), 500
 
-
+# Route pour tester la connexion à une base de données publique
 @app.route('/test_public_db', methods=['POST'])
 def test_public_db():
     logger.info("Requête reçue pour /test_public_db")
-    user_id = request.headers.get('X-User-ID')
-    if not user_id:
-        logger.error("X-User-ID header manquant")
-        return jsonify({'erreur': 'X-User-ID header is required'}), 400
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     required_fields = ['local_db_host', 'local_db_name', 'local_db_user', 'local_db_password', 'local_db_port']
@@ -112,6 +112,7 @@ def test_public_db():
     except Exception as e:
         logger.error(f"Échec de la connexion: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
+
 # --- Fonctions utilitaires ---
 def calculate_ean13_check_digit(code12):
     """Calcule le chiffre de contrôle pour un code EAN-13 à partir d'un code de 12 chiffres."""
@@ -122,17 +123,16 @@ def calculate_ean13_check_digit(code12):
     next_multiple_of_10 = (total + 9) // 10 * 10
     check_digit = next_multiple_of_10 - total
     return check_digit
-# --- Nouvelle route pour gérer la configuration de la base de données ---
+
+# --- Route pour gérer la configuration de la base de données ---
 @app.route('/get_client_config', methods=['GET'])
 def get_client_config():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, _ = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local=False)  # Connexion à Supabase
+        conn = get_conn()  # Toujours Supabase pour cette requête
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
             "SELECT local_db_host, local_db_name, local_db_user, local_db_password, local_db_port FROM client_config WHERE user_id = %s",
@@ -150,27 +150,22 @@ def get_client_config():
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+
 @app.route('/update_client_config', methods=['POST'])
 def update_client_config():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, _ = validation_result  # use_local n'est pas nécessaire ici, car on modifie Supabase
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
-    local_db_host = data.get('local_db_host')
+    local_db_host = data.get('local_db_host', '')
     local_db_name = data.get('local_db_name', 'restocafee')
     local_db_user = data.get('local_db_user', 'postgres')
     local_db_password = data.get('local_db_password', 'masterkey')
     local_db_port = data.get('local_db_port', '5432')
 
-    if not local_db_host:
-        return jsonify({'erreur': 'L\'hôte de la base de données locale est requis'}), 400
-
     try:
-        # Toujours utiliser Supabase pour cette opération
-        conn = get_conn(user_id, use_local=False)
+        conn = get_conn()  # Toujours Supabase pour cette opération
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -214,26 +209,28 @@ def update_client_config():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-		
+
 # --- Produits ---
 @app.route('/rechercher_produit_codebar', methods=['GET'])
 def rechercher_produit_codebar():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     codebar = request.args.get('codebar')
     if not codebar:
         return jsonify({'erreur': 'Code-barres requis'}), 400
 
     try:
-        conn = get_conn(user_id, use_local)
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Requête modifiée pour gérer l'absence de user_id en mode local
-        if use_local:
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+
+        # Requête adaptée selon le type de connexion
+        if is_local:
             cur.execute("""
                 SELECT numero_item, bar, designation, prix, prixba, qte
                 FROM item
@@ -250,7 +247,7 @@ def rechercher_produit_codebar():
 
         if produit:
             # Recherche dans codebar si non trouvé dans item
-            if use_local:
+            if is_local:
                 cur.execute("""
                     SELECT i.numero_item, i.bar, i.designation, i.prix, i.prixba, i.qte
                     FROM codebar c
@@ -291,7 +288,7 @@ def rechercher_produit_codebar():
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-
+	    
 @app.route('/ajouter_codebar_lie', methods=['POST'])
 def ajouter_codebar_lie():
     validation_result = validate_user_and_mode()
