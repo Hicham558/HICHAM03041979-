@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def get_local_db_config(user_id):
     try:
         # Connexion à Supabase pour récupérer la config locale
-        supabase_conn = get_conn(user_id, False)
+        supabase_conn = get_conn(user_id, use_supabase=True)
         cur = supabase_conn.cursor(cursor_factory=RealDictCursor)
         
         cur.execute("""
@@ -39,35 +39,43 @@ def get_local_db_config(user_id):
         return None
 
 # Fonction pour obtenir une connexion (Supabase ou locale)
-def get_conn(user_id=None, use_local=False):
-    if not use_local or not user_id:
+def get_conn(user_id, use_supabase=False):
+    if use_supabase or not user_id:
         # Connexion par défaut à Supabase
         url = os.environ['DATABASE_URL']
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(url, sslmode='require')
     else:
-        # Connexion à la base locale du client
+        # Vérifier si une configuration locale existe
         config = get_local_db_config(user_id)
-        if not config:
-            raise Exception("Configuration de base de données locale non trouvée")
-        
-        return psycopg2.connect(
-            host=config['local_db_host'],
-            database=config['local_db_name'],
-            user=config['local_db_user'],
-            password=config['local_db_password'],
-            port=config['local_db_port']
-        )
+        if config and config['local_db_host']:
+            logger.info(f"Connexion locale pour user_id {user_id}")
+            return psycopg2.connect(
+                host=config['local_db_host'],
+                database=config['local_db_name'] or 'restocafee',
+                user=config['local_db_user'] or 'postgres',
+                password=config['local_db_password'] or 'masterkey',
+                port=config['local_db_port'] or '5432',
+                connect_timeout=5
+            ), True
+        else:
+            logger.info(f"Connexion Supabase pour user_id {user_id}")
+            return psycopg2.connect(os.environ['DATABASE_URL'].replace("postgres://", "postgresql://", 1), sslmode='require'), False
 
-# Vérification de l'utilisateur et du mode de connexion
-def validate_user_and_mode():
+# Vérification de l'utilisateur
+def validate_user():
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
-    
-    use_local = request.headers.get('X-Use-Local', 'false').lower() == 'true'
-    return user_id, use_local
+    return user_id
+	
+# Vérification de l'utilisateur
+def validate_user():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return jsonify({'erreur': 'Identifiant utilisateur requis'}), 401
+    return user_id
 
 # Route pour vérifier que l'API est en ligne
 @app.route('/', methods=['GET'])
