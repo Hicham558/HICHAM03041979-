@@ -843,19 +843,25 @@ def liste_produits():
         conn = get_conn(user_id)
         cur = conn.cursor()
         
-        # Debug: Ajouter le type de connexion dans les logs
-        logger.info(f"Mode {'LOCAL' if getattr(conn, 'is_local', False) else 'SUPABASE'} pour user {user_id}")
-
-        if getattr(conn, 'is_local', False):
-            query = "SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item ORDER BY designation"
-            params = ()
-        else:
-            query = "SELECT numero_item, bar, designation, qte, prix, prixba, ref FROM item WHERE user_id = %s ORDER BY designation"
+        # Construction dynamique de la requête
+        base_query = """
+            SELECT numero_item, bar, designation, qte, prix, prixba, ref 
+            FROM item
+        """
+        
+        if getattr(conn, 'has_user_id', True):  # Par défaut True pour sécurité
+            base_query += " WHERE user_id = %s"
             params = (user_id,)
-
-        cur.execute(query, params)
-        produits = [
-            {
+        else:
+            params = ()
+        
+        base_query += " ORDER BY designation"
+        cur.execute(base_query, params)
+        
+        # Mapping des résultats
+        produits = []
+        for row in cur:
+            produits.append({
                 'NUMERO_ITEM': row[0],
                 'BAR': row[1] or '',
                 'DESIGNATION': row[2] or '',
@@ -863,20 +869,12 @@ def liste_produits():
                 'PRIX': float(row[4]) if row[4] is not None else 0.0,
                 'PRIXBA': str(row[5]) if row[5] is not None else '0.00',
                 'REF': str(row[6]) if row[6] is not None else ''
-            }
-            for row in cur.fetchall()
-        ]
-        
+            })
+
         return jsonify(produits)
 
-    except psycopg2.OperationalError as oe:
-        logger.error(f"Erreur opérationnelle DB: {str(oe)}")
-        return jsonify({'erreur': 'Problème de connexion à la base de données', 'details': str(oe)}), 503
-    except psycopg2.Error as pe:
-        logger.error(f"Erreur PostgreSQL: {str(pe)}")
-        return jsonify({'erreur': 'Erreur base de données', 'details': str(pe)}), 500
     except Exception as e:
-        logger.error(f"Erreur inattendue: {str(e)}")
+        logger.error(f"Erreur liste_produits: {str(e)}")
         return jsonify({'erreur': 'Erreur serveur'}), 500
     finally:
         if 'cur' in locals(): cur.close()
