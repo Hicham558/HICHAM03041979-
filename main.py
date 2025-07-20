@@ -3029,8 +3029,6 @@ def situation_versements():
 # --- Ventes ---
 
 
-
-
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
     user_id = validate_user_id()
@@ -3122,15 +3120,7 @@ def annuler_vente():
 
         # Si vente à terme (numero_table != '0'), ajuster le solde du client
         if commande['numero_table'] != '0':
-            total_sale = 0.0
-            for ligne in lignes:
-                try:
-                    prixt_str = str(ligne['prixt'] or '0').replace(',', '.')
-                    total_sale += float(prixt_str)
-                except ValueError as ve:
-                    logger.warning(f"Erreur conversion prixt pour numero_item={ligne['numero_item']}, prixt={ligne['prixt']}: {str(ve)}")
-                    continue
-
+            total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
             if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", 
                            (commande['numero_table'],))
@@ -3143,13 +3133,7 @@ def annuler_vente():
                 logger.error(f"Client {commande['numero_table']} non trouvé")
                 raise Exception(f"Client {commande['numero_table']} non trouvé")
             
-            solde_str = str(client['solde'] or '0.0').replace(',', '.')
-            try:
-                current_solde = float(solde_str)
-            except ValueError as ve:
-                logger.error(f"Erreur conversion solde pour numero_clt={commande['numero_table']}, solde={client['solde']}: {str(ve)}")
-                raise Exception(f"Erreur conversion solde: {client['solde']}")
-            
+            current_solde = float(client['solde'] or 0)
             new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
             new_solde_str = f"{new_solde:.2f}"
             
@@ -3196,6 +3180,10 @@ def annuler_vente():
             cur.close()
             conn.close()
             logger.debug("Connexion fermée")
+```
+
+
+
 		
 # --- Réceptions ---
 
