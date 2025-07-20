@@ -3028,7 +3028,6 @@ def situation_versements():
 
 # --- Ventes ---
 
-
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
     user_id = validate_user_id()
@@ -3069,7 +3068,7 @@ def annuler_vente():
                 SELECT c.numero_table, c.nature, c.numero_util, u.password2 
                 FROM comande c
                 JOIN utilisateur u ON c.numero_util = u.numero_util AND u.user_id = %s
-                WHERE c.numero_comande = %s AND c.user_id = %s
+                WHERE c.numero_comande = %s AND c.user_id = %s AND c.nature IN ('Vente', 'Bon de livraison')
             """, (user_id, numero_comande, user_id))
             
         commande = cur.fetchone()
@@ -3093,7 +3092,7 @@ def annuler_vente():
             cur.execute("""
                 SELECT numero_item, quantite, prixt
                 FROM attache 
-                WHERE numero_comande = %s AND user_id = %s
+                WHERE numero_comande = %s AND user_id = %the %s
             """, (numero_comande, user_id))
             
         lignes = cur.fetchall()
@@ -3118,8 +3117,8 @@ def annuler_vente():
                     WHERE numero_item = %s AND user_id = %s
                 """, (quantite, ligne['numero_item'], user_id))
 
-        # Si vente à terme (numero_table != '0'), ajuster le solde du client
-        if commande['numero_table'] != '0':
+        # Si vente à terme (numero_table non vide et != '0'), ajuster le solde du client
+        if commande['numero_table'] and commande['numero_table'] != '0':
             total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
             if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", 
@@ -3134,7 +3133,7 @@ def annuler_vente():
                 raise Exception(f"Client {commande['numero_table']} non trouvé")
             
             current_solde = float(client['solde'] or 0)
-            new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
+            new_solde = current_solde - total_sale
             new_solde_str = f"{new_solde:.2f}"
             
             if is_local:
