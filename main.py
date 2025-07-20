@@ -3028,10 +3028,13 @@ def situation_versements():
 
 # --- Ventes ---
 
+
+
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
     user_id = validate_user()
     if isinstance(user_id, tuple):
+        logger.error(f"Erreur validation utilisateur: {user_id}")
         return user_id
 
     data = request.get_json()
@@ -3049,7 +3052,7 @@ def annuler_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check if connection is local
+        # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
@@ -3102,22 +3105,31 @@ def annuler_vente():
 
         # Restaurer le stock dans item
         for ligne in lignes:
+            quantite = float(ligne['quantite'] or 0)
             if is_local:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte + %s 
                     WHERE numero_item = %s
-                """, (ligne['quantite'], ligne['numero_item']))
+                """, (quantite, ligne['numero_item']))
             else:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte + %s 
                     WHERE numero_item = %s AND user_id = %s
-                """, (ligne['quantite'], ligne['numero_item'], user_id))
+                """, (quantite, ligne['numero_item'], user_id))
 
         # Si vente à terme (numero_table != 0), ajuster le solde du client
         if commande['numero_table'] != '0':
-            total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
+            total_sale = 0.0
+            for ligne in lignes:
+                try:
+                    prixt_str = str(ligne['prixt'] or '0').replace(',', '.')
+                    total_sale += float(prixt_str)
+                except ValueError as ve:
+                    logger.warning(f"Erreur conversion prixt pour numero_item={ligne['numero_item']}, prixt={ligne['prixt']}: {str(ve)}")
+                    continue
+
             if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", 
                            (commande['numero_table'],))
@@ -3130,7 +3142,13 @@ def annuler_vente():
                 logger.error(f"Client {commande['numero_table']} non trouvé")
                 raise Exception(f"Client {commande['numero_table']} non trouvé")
             
-            current_solde = float(client['solde'] or '0.0')
+            solde_str = str(client['solde'] or '0.0').replace(',', '.')
+            try:
+                current_solde = float(solde_str)
+            except ValueError as ve:
+                logger.error(f"Erreur conversion solde pour numero_clt={commande['numero_table']}, solde={client['solde']}: {str(ve)}")
+                raise Exception(f"Erreur conversion solde: {client['solde']}")
+            
             new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
             new_solde_str = f"{new_solde:.2f}"
             
@@ -3168,7 +3186,7 @@ def annuler_vente():
         return jsonify({"statut": "Vente annulée"}), 200
 
     except Exception as e:
-        logger.error(f"Erreur dans annuler_vente: {str(e)}")
+        logger.error(f"Erreur dans annuler_vente: {str(e)}", exc_info=True)
         if conn:
             conn.rollback()
         return jsonify({"erreur": str(e)}), 500
@@ -3177,7 +3195,6 @@ def annuler_vente():
             cur.close()
             conn.close()
             logger.debug("Connexion fermée")
-
 # --- Réceptions ---
 
 @app.route('/annuler_reception', methods=['POST'])
