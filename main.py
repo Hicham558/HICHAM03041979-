@@ -3030,17 +3030,18 @@ def situation_versements():
 
 
 
+
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
-    user_id = validate_user()
-    if isinstance(user_id, tuple):
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
         logger.error(f"Erreur validation utilisateur: {user_id}")
         return user_id
 
     data = request.get_json()
     if not data or 'numero_comande' not in data or 'password2' not in data:
         logger.error("Données d'annulation vente invalides")
-        return jsonify({"erreur": "Numéro de commande ou mot de passe manquant"}), 400
+        return jsonify({"error": "Numéro de commande ou mot de passe manquant"}), 400
 
     numero_comande = data.get('numero_comande')
     password2 = data.get('password2')
@@ -3076,12 +3077,12 @@ def annuler_vente():
         commande = cur.fetchone()
         if not commande:
             logger.error(f"Commande {numero_comande} non trouvée")
-            return jsonify({"erreur": "Commande non trouvée"}), 404
+            return jsonify({"error": "Commande non trouvée"}), 404
 
         # Vérifier le mot de passe
         if commande['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour annuler la commande {numero_comande}")
-            return jsonify({"erreur": "Mot de passe incorrect"}), 401
+            return jsonify({"error": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la vente
         if is_local:
@@ -3101,7 +3102,7 @@ def annuler_vente():
 
         if not lignes:
             logger.error(f"Aucune ligne trouvée pour la commande {numero_comande}")
-            return jsonify({"erreur": "Aucune ligne de vente trouvée"}), 404
+            return jsonify({"error": "Aucune ligne de vente trouvée"}), 404
 
         # Restaurer le stock dans item
         for ligne in lignes:
@@ -3119,7 +3120,7 @@ def annuler_vente():
                     WHERE numero_item = %s AND user_id = %s
                 """, (quantite, ligne['numero_item'], user_id))
 
-        # Si vente à terme (numero_table != 0), ajuster le solde du client
+        # Si vente à terme (numero_table != '0'), ajuster le solde du client
         if commande['numero_table'] != '0':
             total_sale = 0.0
             for ligne in lignes:
@@ -3189,12 +3190,13 @@ def annuler_vente():
         logger.error(f"Erreur dans annuler_vente: {str(e)}", exc_info=True)
         if conn:
             conn.rollback()
-        return jsonify({"erreur": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
             logger.debug("Connexion fermée")
+		
 # --- Réceptions ---
 
 @app.route('/annuler_reception', methods=['POST'])
