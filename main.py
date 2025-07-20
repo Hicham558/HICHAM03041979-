@@ -937,12 +937,15 @@ def supprimer_fournisseur(numero_fou):
 
 # --- Produits ---
 
+
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
     user_id = validate_user()
     if isinstance(user_id, tuple):
+        logger.error(f"Erreur validation utilisateur: {user_id}")
         return user_id
 
+    conn = None
     try:
         logger.debug(f"Tentative de récupération des produits pour user_id: {user_id}")
         conn = get_conn(user_id)
@@ -963,28 +966,40 @@ def liste_produits():
         rows = cur.fetchall()
         logger.debug(f"Nombre de produits trouvés: {len(rows)}")
         
-        produits = [
-            {
-                'NUMERO_ITEM': row['numero_item'],
-                'BAR': row['bar'],
-                'DESIGNATION': row['designation'],
-                'QTE': row['qte'],
-                'PRIX': float(row['prix']) if row['prix'] is not None else 0.0,
-                'PRIXBA': row['prixba'] or '0.00',
-                'REF': row['ref'] or ''
-            }
-            for row in rows
-        ]
+        produits = []
+        for row in rows:
+            try:
+                # Gérer le champ prix (remplacer virgule par point si nécessaire)
+                prix_str = str(row['prix']).replace(',', '.') if row['prix'] is not None else '0.0'
+                prix = float(prix_str) if prix_str else 0.0
+                
+                # Gérer le champ prixba (garder comme chaîne pour cohérence avec le format)
+                prixba = str(row['prixba']).replace(',', '.') if row['prixba'] is not None else '0.00'
+                
+                produits.append({
+                    'NUMERO_ITEM': row['numero_item'],
+                    'BAR': row['bar'] or '',
+                    'DESIGNATION': row['designation'] or '',
+                    'QTE': float(row['qte']) if row['qte'] is not None else 0.0,
+                    'PRIX': prix,
+                    'PRIXBA': prixba,
+                    'REF': row['ref'] or ''
+                })
+            except (ValueError, TypeError) as e:
+                logger.error(f"Erreur de conversion pour produit numero_item={row['numero_item']}: {str(e)}")
+                continue  # Ignorer la ligne problématique mais continuer avec les autres
         
-        cur.close()
-        conn.close()
-        logger.debug("Connexion fermée, retour des produits")
-        return jsonify(produits)
+        logger.debug(f"Produits traités: {len(produits)}")
+        return jsonify(produits), 200
+
     except Exception as e:
-        logger.error(f"Erreur dans liste_produits: {str(e)}")
-        if 'conn' in locals() and conn:
-            conn.close()
+        logger.error(f"Erreur dans liste_produits: {str(e)}", exc_info=True)
         return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
