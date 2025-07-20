@@ -3030,15 +3030,14 @@ def situation_versements():
 
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        logger.error(f"Erreur validation utilisateur: {user_id}")
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
         return user_id
 
     data = request.get_json()
     if not data or 'numero_comande' not in data or 'password2' not in data:
         logger.error("Données d'annulation vente invalides")
-        return jsonify({"error": "Numéro de commande ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Numéro de commande ou mot de passe manquant"}), 400
 
     numero_comande = data.get('numero_comande')
     password2 = data.get('password2')
@@ -3050,7 +3049,7 @@ def annuler_vente():
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier si la connexion est locale
+        # Check if connection is local
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
@@ -3068,18 +3067,18 @@ def annuler_vente():
                 SELECT c.numero_table, c.nature, c.numero_util, u.password2 
                 FROM comande c
                 JOIN utilisateur u ON c.numero_util = u.numero_util AND u.user_id = %s
-                WHERE c.numero_comande = %s AND c.user_id = %s AND c.nature IN ('Vente', 'Bon de livraison')
+                WHERE c.numero_comande = %s AND c.user_id = %s
             """, (user_id, numero_comande, user_id))
             
         commande = cur.fetchone()
         if not commande:
             logger.error(f"Commande {numero_comande} non trouvée")
-            return jsonify({"error": "Commande non trouvée"}), 404
+            return jsonify({"erreur": "Commande non trouvée"}), 404
 
         # Vérifier le mot de passe
         if commande['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour annuler la commande {numero_comande}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la vente
         if is_local:
@@ -3092,34 +3091,34 @@ def annuler_vente():
             cur.execute("""
                 SELECT numero_item, quantite, prixt
                 FROM attache 
-                WHERE numero_comande = %s AND user_id = %the %s
+                WHERE numero_comande = %s AND user_id = %s
             """, (numero_comande, user_id))
             
         lignes = cur.fetchall()
 
         if not lignes:
             logger.error(f"Aucune ligne trouvée pour la commande {numero_comande}")
-            return jsonify({"error": "Aucune ligne de vente trouvée"}), 404
+            return jsonify({"erreur": "Aucune ligne de vente trouvée"}), 404
 
         # Restaurer le stock dans item
         for ligne in lignes:
-            quantite = float(ligne['quantite'] or 0)
             if is_local:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte + %s 
                     WHERE numero_item = %s
-                """, (quantite, ligne['numero_item']))
+                """, (ligne['quantite'], ligne['numero_item']))
             else:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte + %s 
                     WHERE numero_item = %s AND user_id = %s
-                """, (quantite, ligne['numero_item'], user_id))
+                """, (ligne['quantite'], ligne['numero_item'], user_id))
 
-        # Si vente à terme (numero_table non vide et != '0'), ajuster le solde du client
-        if commande['numero_table'] and commande['numero_table'] != '0':
+        # Si vente à terme (numero_table != 0), ajuster le solde du client
+        if commande['numero_table'] != 0:
             total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
+            
             if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", 
                            (commande['numero_table'],))
@@ -3132,8 +3131,8 @@ def annuler_vente():
                 logger.error(f"Client {commande['numero_table']} non trouvé")
                 raise Exception(f"Client {commande['numero_table']} non trouvé")
             
-            current_solde = float(client['solde'] or 0)
-            new_solde = current_solde - total_sale
+            current_solde = float(client['solde'] or '0.0')
+            new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
             new_solde_str = f"{new_solde:.2f}"
             
             if is_local:
@@ -3148,7 +3147,7 @@ def annuler_vente():
                     SET solde = %s 
                     WHERE numero_clt = %s AND user_id = %s
                 """, (new_solde_str, commande['numero_table'], user_id))
-                
+                    
             logger.debug(f"Solde client mis à jour: numero_clt={commande['numero_table']}, total_sale={total_sale}, new_solde={new_solde_str}")
 
         # Supprimer les lignes de attache
@@ -3156,30 +3155,29 @@ def annuler_vente():
             cur.execute("DELETE FROM attache WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("DELETE FROM attache WHERE numero_comande = %s AND user_id = %s", 
-                        (numero_comande, user_id))
+                       (numero_comande, user_id))
 
         # Supprimer la commande
         if is_local:
             cur.execute("DELETE FROM comande WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("DELETE FROM comande WHERE numero_comande = %s AND user_id = %s", 
-                        (numero_comande, user_id))
+                       (numero_comande, user_id))
 
         conn.commit()
         logger.info(f"Vente annulée: numero_comande={numero_comande}, {len(lignes)} lignes")
         return jsonify({"statut": "Vente annulée"}), 200
 
     except Exception as e:
-        logger.error(f"Erreur dans annuler_vente: {str(e)}", exc_info=True)
+        logger.error(f"Erreur dans annuler_vente: {str(e)}")
         if conn:
             conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
             logger.debug("Connexion fermée")
-
 		
 # --- Réceptions ---
 
