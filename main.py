@@ -3180,9 +3180,6 @@ def annuler_vente():
             cur.close()
             conn.close()
             logger.debug("Connexion fermée")
-```
-
-
 
 		
 # --- Réceptions ---
