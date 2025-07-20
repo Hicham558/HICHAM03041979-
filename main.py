@@ -209,8 +209,8 @@ def update_client_config():
             conn.rollback()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-
 # --- Produits ---
+
 @app.route('/rechercher_produit_codebar', methods=['GET'])
 def rechercher_produit_codebar():
     user_id = validate_user()
@@ -222,12 +222,14 @@ def rechercher_produit_codebar():
         return jsonify({'erreur': 'Code-barres requis'}), 400
 
     try:
+        logger.debug(f"Recherche produit avec codebar: {codebar} pour user_id: {user_id}")
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
         # Requête adaptée selon le type de connexion
         if is_local:
@@ -268,34 +270,50 @@ def rechercher_produit_codebar():
             conn.close()
             
             if produit_lie:
+                logger.debug(f"Produit lié trouvé pour codebar: {codebar}")
                 return jsonify({
                     'statut': 'trouvé',
                     'type': 'lié',
-                    'produit': produit_lie
+                    'produit': {
+                        'numero_item': produit_lie['numero_item'],
+                        'bar': produit_lie['bar'],
+                        'designation': produit_lie['designation'],
+                        'prix': float(produit_lie['prix']) if produit_lie['prix'] is not None else 0.0,
+                        'prixba': produit_lie['prixba'] or '0.00',
+                        'qte': produit_lie['qte']
+                    }
                 }), 200
             else:
+                logger.debug(f"Produit principal trouvé pour codebar: {codebar}")
                 return jsonify({
                     'statut': 'trouvé',
                     'type': 'principal',
-                    'produit': produit
+                    'produit': {
+                        'numero_item': produit['numero_item'],
+                        'bar': produit['bar'],
+                        'designation': produit['designation'],
+                        'prix': float(produit['prix']) if produit['prix'] is not None else 0.0,
+                        'prixba': produit['prixba'] or '0.00',
+                        'qte': produit['qte']
+                    }
                 }), 200
 
         cur.close()
         conn.close()
+        logger.debug(f"Produit non trouvé pour codebar: {codebar}")
         return jsonify({'erreur': 'Produit non trouvé'}), 404
 
     except Exception as e:
+        logger.error(f"Erreur dans rechercher_produit_codebar: {str(e)}")
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-	    
+
 @app.route('/ajouter_codebar_lie', methods=['POST'])
 def ajouter_codebar_lie():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     numero_item = data.get('numero_item')
@@ -306,12 +324,18 @@ def ajouter_codebar_lie():
 
     try:
         numero_item = int(numero_item)
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Ajout code-barres lié pour numero_item: {numero_item}, bar2: {bar2}, user_id: {user_id}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier que l'item existe
-        if use_local:
+        if is_local:
             cur.execute("SELECT 1 FROM item WHERE numero_item = %s", (numero_item,))
         else:
             cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
@@ -324,7 +348,7 @@ def ajouter_codebar_lie():
 
         # Vérifier que bar2 n'existe pas déjà
         if bar2:
-            if use_local:
+            if is_local:
                 cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s", (bar2,))
             else:
                 cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
@@ -335,7 +359,7 @@ def ajouter_codebar_lie():
                 return jsonify({'erreur': 'Ce code-barres lié existe déjà'}), 409
 
         # Générer un bar2 si non fourni
-        if use_local:
+        if is_local:
             cur.execute("SELECT bar2 FROM codebar")
         else:
             cur.execute("SELECT bar2 FROM codebar WHERE user_id = %s", (user_id,))
@@ -359,7 +383,7 @@ def ajouter_codebar_lie():
             check_digit = calculate_ean13_check_digit(code12)
             bar2 = f"{code12}{check_digit}"
             
-            if use_local:
+            if is_local:
                 cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s", (bar2,))
             else:
                 cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND user_id = %s", (bar2, user_id))
@@ -371,7 +395,7 @@ def ajouter_codebar_lie():
                 return jsonify({'erreur': 'Le code EAN-13 généré existe déjà'}), 409
 
         cur.execute("LOCK TABLE codebar IN EXCLUSIVE MODE")
-        if use_local:
+        if is_local:
             cur.execute(
                 "INSERT INTO codebar (bar2, bar) VALUES (%s, %s) RETURNING n",
                 (bar2, numero_item)
@@ -386,13 +410,16 @@ def ajouter_codebar_lie():
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Code-barres lié ajouté: id={codebar_id}, bar2={bar2}")
         return jsonify({'statut': 'Code-barres lié ajouté', 'id': codebar_id, 'bar2': bar2}), 201
     
     except ValueError:
+        logger.error(f"Erreur ValueError dans ajouter_codebar_lie: numero_item doit être un nombre")
         if 'conn' in locals() and conn:
             conn.rollback()
         return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
     except Exception as e:
+        logger.error(f"Erreur dans ajouter_codebar_lie: {str(e)}")
         if 'conn' in locals() and conn:
             conn.rollback()
             conn.close()
@@ -400,11 +427,9 @@ def ajouter_codebar_lie():
 
 @app.route('/liste_codebar_lies', methods=['GET'])
 def liste_codebar_lies():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     numero_item = request.args.get('numero_item')
     if not numero_item:
@@ -412,11 +437,17 @@ def liste_codebar_lies():
 
     try:
         numero_item = int(numero_item)
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des codes-barres liés pour numero_item: {numero_item}, user_id: {user_id}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier que l'item existe
-        if use_local:
+        if is_local:
             cur.execute("SELECT 1 FROM item WHERE numero_item = %s", (numero_item,))
         else:
             cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
@@ -428,33 +459,34 @@ def liste_codebar_lies():
             return jsonify({'erreur': 'Produit non trouvé'}), 404
 
         # Récupérer les codes-barres liés
-        if use_local:
+        if is_local:
             cur.execute("SELECT bar2 FROM codebar WHERE bar::INTEGER = %s ORDER BY n", (numero_item,))
         else:
             cur.execute("SELECT bar2 FROM codebar WHERE bar::INTEGER = %s AND user_id = %s ORDER BY n", (numero_item, user_id))
         
         linked_barcodes = [row['bar2'] for row in cur.fetchall()]
-
+        
         cur.close()
         conn.close()
+        logger.debug(f"Codes-barres liés trouvés: {linked_barcodes}")
         return jsonify({'linked_barcodes': linked_barcodes}), 200
     
     except ValueError:
+        logger.error(f"Erreur ValueError dans liste_codebar_lies: numero_item doit être un nombre")
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': 'numero_item doit être un nombre valide'}), 400
     except Exception as e:
+        logger.error(f"Erreur dans liste_codebar_lies: {str(e)}")
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/supprimer_codebar_lie', methods=['POST'])
 def supprimer_codebar_lie():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     numero_item = data.get('numero_item')
@@ -465,50 +497,59 @@ def supprimer_codebar_lie():
 
     try:
         numero_item_str = str(numero_item)
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Suppression code-barres lié pour numero_item: {numero_item}, bar2: {bar2}, user_id: {user_id}")
+        conn = get_conn(user_id)
         conn.autocommit = False
-        try:
-            cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
 
-            # Vérifier que l'item existe
-            if use_local:
-                cur.execute("SELECT 1 FROM item WHERE numero_item = %s", (int(numero_item),))
-            else:
-                cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (int(numero_item), user_id))
-            
-            item = cur.fetchone()
-            if not item:
-                raise Exception('Produit non trouvé')
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
-            # Vérifier que le code-barres lié existe
-            if use_local:
-                cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s", (bar2, numero_item_str))
-            else:
-                cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
-            
-            if not cur.fetchone():
-                raise Exception('Code-barres lié non trouvé pour ce produit')
-
-            # Supprimer le code-barres lié
-            if use_local:
-                cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s", (bar2, numero_item_str))
-            else:
-                cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
-
-            conn.commit()
-            return jsonify({'statut': 'Code-barres lié supprimé'}), 200
+        # Vérifier que l'item existe
+        if is_local:
+            cur.execute("SELECT 1 FROM item WHERE numero_item = %s", (int(numero_item),))
+        else:
+            cur.execute("SELECT 1 FROM item WHERE numero_item = %s AND user_id = %s", (int(numero_item), user_id))
         
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
+        item = cur.fetchone()
+        if not item:
             cur.close()
             conn.close()
+            return jsonify({'erreur': 'Produit non trouvé'}), 404
+
+        # Vérifier que le code-barres lié existe
+        if is_local:
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s", (bar2, numero_item_str))
+        else:
+            cur.execute("SELECT 1 FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
+        
+        if not cur.fetchone():
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Code-barres lié non trouvé pour ce produit'}), 404
+
+        # Supprimer le code-barres lié
+        if is_local:
+            cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s", (bar2, numero_item_str))
+        else:
+            cur.execute("DELETE FROM codebar WHERE bar2 = %s AND bar = %s AND user_id = %s", (bar2, numero_item_str, user_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Code-barres lié supprimé: bar2={bar2}")
+        return jsonify({'statut': 'Code-barres lié supprimé'}), 200
+    
     except Exception as e:
+        logger.error(f"Erreur dans supprimer_codebar_lie: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 # --- Clients ---
-# ... (autres imports et code existant restent inchangés)
 
 @app.route('/liste_clients', methods=['GET'])
 def liste_clients():
@@ -517,12 +558,14 @@ def liste_clients():
         return user_id
 
     try:
+        logger.debug(f"Tentative de récupération des clients pour user_id: {user_id}")
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
         # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
         
         if is_local:
             cur.execute("SELECT numero_clt, nom, solde, reference, contact, adresse FROM client ORDER BY nom")
@@ -532,6 +575,7 @@ def liste_clients():
         rows = cur.fetchall()
         cur.close()
         conn.close()
+        logger.debug(f"Nombre de clients trouvés: {len(rows)}")
 
         clients = [
             {
@@ -546,9 +590,352 @@ def liste_clients():
         ]
         return jsonify(clients)
     except Exception as e:
+        logger.error(f"Erreur dans liste_clients: {str(e)}")
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_client', methods=['POST'])
+def ajouter_client():
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        logger.debug(f"Ajout client pour user_id: {user_id}, nom: {nom}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute("SELECT COUNT(*) FROM client")
+            reference = f"C{cur.fetchone()['count'] + 1}"
+            
+            cur.execute(
+                "INSERT INTO client (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s) RETURNING numero_clt",
+                (nom, '0.00', reference, contact, adresse)
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM client WHERE user_id = %s", (user_id,))
+            reference = f"C{cur.fetchone()['count'] + 1}"
+            
+            cur.execute(
+                "INSERT INTO client (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_clt",
+                (nom, '0.00', reference, contact, adresse, user_id)
+            )
+        
+        client_id = cur.fetchone()['numero_clt']
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Client ajouté: id={client_id}, reference={reference}")
+        return jsonify({'statut': 'Client ajouté', 'id': client_id, 'reference': reference}), 201
+    except Exception as e:
+        logger.error(f"Erreur dans ajouter_client: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_client/<numero_clt>', methods=['PUT'])
+def modifier_client(numero_clt):
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        logger.debug(f"Modification client numero_clt: {numero_clt}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute(
+                "UPDATE client SET nom = %s, contact = %s, adresse = %s WHERE numero_clt = %s RETURNING numero_clt",
+                (nom, contact, adresse, numero_clt)
+            )
+        else:
+            cur.execute(
+                "UPDATE client SET nom = %s, contact = %s, adresse = %s WHERE numero_clt = %s AND user_id = %s RETURNING numero_clt",
+                (nom, contact, adresse, numero_clt, user_id)
+            )
+        
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Client non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Client modifié: numero_clt={numero_clt}")
+        return jsonify({'statut': 'Client modifié'}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans modifier_client: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/supprimer_client/<numero_clt>', methods=['DELETE'])
+def supprimer_client(numero_clt):
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        logger.debug(f"Suppression client numero_clt: {numero_clt}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute("DELETE FROM client WHERE numero_clt = %s", (numero_clt,))
+        else:
+            cur.execute("DELETE FROM client WHERE numero_clt = %s AND user_id = %s", (numero_clt, user_id))
+        
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Client non trouvé'}), 404
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Client supprimé: numero_clt={numero_clt}")
+        return jsonify({'statut': 'Client supprimé'}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans supprimer_client: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+# --- Fournisseurs ---
+
+@app.route('/liste_fournisseurs', methods=['GET'])
+def liste_fournisseurs():
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        logger.debug(f"Tentative de récupération des fournisseurs pour user_id: {user_id}")
+        conn = get_conn(user_id)
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+        
+        if is_local:
+            cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur ORDER BY nom")
+        else:
+            cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur WHERE user_id = %s ORDER BY nom", (user_id,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        logger.debug(f"Nombre de fournisseurs trouvés: {len(rows)}")
+
+        fournisseurs = [
+            {
+                'numero_fou': row['numero_fou'],
+                'nom': row['nom'],
+                'solde': float(row['solde']) if row['solde'] is not None else 0.0,
+                'reference': row['reference'],
+                'contact': row['contact'] or '',
+                'adresse': row['adresse'] or ''
+            }
+            for row in rows
+        ]
+        return jsonify(fournisseurs)
+    except Exception as e:
+        logger.error(f"Erreur dans liste_fournisseurs: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/ajouter_fournisseur', methods=['POST'])
+def ajouter_fournisseur():
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        logger.debug(f"Ajout fournisseur pour user_id: {user_id}, nom: {nom}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute("SELECT COUNT(*) FROM fournisseur")
+            reference = f"F{cur.fetchone()['count'] + 1}"
+            
+            cur.execute(
+                "INSERT INTO fournisseur (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s) RETURNING numero_fou",
+                (nom, '0.00', reference, contact, adresse)
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM fournisseur WHERE user_id = %s", (user_id,))
+            reference = f"F{cur.fetchone()['count'] + 1}"
+            
+            cur.execute(
+                "INSERT INTO fournisseur (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_fou",
+                (nom, '0.00', reference, contact, adresse, user_id)
+            )
+        
+        fournisseur_id = cur.fetchone()['numero_fou']
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Fournisseur ajouté: id={fournisseur_id}, reference={reference}")
+        return jsonify({'statut': 'Fournisseur ajouté', 'id': fournisseur_id, 'reference': reference}), 201
+    except Exception as e:
+        logger.error(f"Erreur dans ajouter_fournisseur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/modifier_fournisseur/<numero_fou>', methods=['PUT'])
+def modifier_fournisseur(numero_fou):
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    nom = data.get('nom')
+    contact = data.get('contact')
+    adresse = data.get('adresse')
+
+    if not nom:
+        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
+
+    try:
+        logger.debug(f"Modification fournisseur numero_fou: {numero_fou}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute(
+                "UPDATE fournisseur SET nom = %s, contact = %s, adresse = %s WHERE numero_fou = %s RETURNING numero_fou",
+                (nom, contact, adresse, numero_fou)
+            )
+        else:
+            cur.execute(
+                "UPDATE fournisseur SET nom = %s, contact = %s, adresse = %s WHERE numero_fou = %s AND user_id = %s RETURNING numero_fou",
+                (nom, contact, adresse, numero_fou, user_id)
+            )
+        
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Fournisseur non trouvé'}), 404
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Fournisseur modifié: numero_fou={numero_fou}")
+        return jsonify({'statut': 'Fournisseur modifié'}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans modifier_fournisseur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+@app.route('/supprimer_fournisseur/<numero_fou>', methods=['DELETE'])
+def supprimer_fournisseur(numero_fou):
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    try:
+        logger.debug(f"Suppression fournisseur numero_fou: {numero_fou}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
+            cur.execute("DELETE FROM fournisseur WHERE numero_fou = %s", (numero_fou,))
+        else:
+            cur.execute("DELETE FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_fou, user_id))
+        
+        if cur.rowcount == 0:
+            cur.close()
+            conn.close()
+            return jsonify({'erreur': 'Fournisseur non trouvé'}), 404
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        logger.debug(f"Fournisseur supprimé: numero_fou={numero_fou}")
+        return jsonify({'statut': 'Fournisseur supprimé'}), 200
+    except Exception as e:
+        logger.error(f"Erreur dans supprimer_fournisseur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
+        return jsonify({'erreur': str(e)}), 500
+
+# --- Produits ---
 
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
@@ -598,291 +985,12 @@ def liste_produits():
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
-@app.route('/ajouter_client', methods=['POST'])
-def ajouter_client():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    data = request.get_json()
-    nom = data.get('nom')
-    contact = data.get('contact')
-    adresse = data.get('adresse')
-
-    if not nom:
-        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute("SELECT COUNT(*) FROM client")
-            reference = f"C{cur.fetchone()[0] + 1}"
-            
-            cur.execute(
-                "INSERT INTO client (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s) RETURNING numero_clt",
-                (nom, '0.00', reference, contact, adresse)
-            )
-        else:
-            cur.execute("SELECT COUNT(*) FROM client WHERE user_id = %s", (user_id,))
-            reference = f"C{cur.fetchone()[0] + 1}"
-            
-            cur.execute(
-                "INSERT INTO client (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_clt",
-                (nom, '0.00', reference, contact, adresse, user_id)
-            )
-        
-        client_id = cur.fetchone()[0]
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Client ajouté', 'id': client_id, 'reference': reference}), 201
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/modifier_client/<numero_clt>', methods=['PUT'])
-def modifier_client(numero_clt):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    data = request.get_json()
-    nom = data.get('nom')
-    contact = data.get('contact')
-    adresse = data.get('adresse')
-
-    if not nom:
-        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute(
-                "UPDATE client SET nom = %s, contact = %s, adresse = %s WHERE numero_clt = %s RETURNING numero_clt",
-                (nom, contact, adresse, numero_clt)
-            )
-        else:
-            cur.execute(
-                "UPDATE client SET nom = %s, contact = %s, adresse = %s WHERE numero_clt = %s AND user_id = %s RETURNING numero_clt",
-                (nom, contact, adresse, numero_clt, user_id)
-            )
-        
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Client non trouvé'}), 404
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Client modifié'}), 200
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/supprimer_client/<numero_clt>', methods=['DELETE'])
-def supprimer_client(numero_clt):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute("DELETE FROM client WHERE numero_clt = %s", (numero_clt,))
-        else:
-            cur.execute("DELETE FROM client WHERE numero_clt = %s AND user_id = %s", (numero_clt, user_id))
-        
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Client non trouvé'}), 404
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Client supprimé'}), 200
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-# --- Fournisseurs ---
-
-@app.route('/liste_fournisseurs', methods=['GET'])
-def liste_fournisseurs():
-    user_id = validate_user()
-    if isinstance(user_id, tuple):
-        return user_id
-
-    try:
-        conn = get_conn(user_id)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Vérifier si la connexion est locale
-        config = get_local_db_config(user_id)
-        is_local = config and config['local_db_host']
-        
-        if is_local:
-            cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur ORDER BY nom")
-        else:
-            cur.execute("SELECT numero_fou, nom, solde, reference, contact, adresse FROM fournisseur WHERE user_id = %s ORDER BY nom", (user_id,))
-        
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-
-        fournisseurs = [
-            {
-                'numero_fou': row['numero_fou'],
-                'nom': row['nom'],
-                'solde': float(row['solde']) if row['solde'] is not None else 0.0,
-                'reference': row['reference'],
-                'contact': row['contact'] or '',
-                'adresse': row['adresse'] or ''
-            }
-            for row in rows
-        ]
-        return jsonify(fournisseurs)
-    except Exception as e:
-        if 'conn' in locals() and conn:
-            conn.close()
-        return jsonify({'erreur': str(e)}), 500
-@app.route('/ajouter_fournisseur', methods=['POST'])
-def ajouter_fournisseur():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    data = request.get_json()
-    nom = data.get('nom')
-    contact = data.get('contact')
-    adresse = data.get('adresse')
-
-    if not nom:
-        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute("SELECT COUNT(*) FROM fournisseur")
-            reference = f"F{cur.fetchone()[0] + 1}"
-            
-            cur.execute(
-                "INSERT INTO fournisseur (nom, solde, reference, contact, adresse) VALUES (%s, %s, %s, %s, %s) RETURNING numero_fou",
-                (nom, '0.00', reference, contact, adresse)
-            )
-        else:
-            cur.execute("SELECT COUNT(*) FROM fournisseur WHERE user_id = %s", (user_id,))
-            reference = f"F{cur.fetchone()[0] + 1}"
-            
-            cur.execute(
-                "INSERT INTO fournisseur (nom, solde, reference, contact, adresse, user_id) VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_fou",
-                (nom, '0.00', reference, contact, adresse, user_id)
-            )
-        
-        fournisseur_id = cur.fetchone()[0]
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Fournisseur ajouté', 'id': fournisseur_id, 'reference': reference}), 201
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/modifier_fournisseur/<numero_fou>', methods=['PUT'])
-def modifier_fournisseur(numero_fou):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    data = request.get_json()
-    nom = data.get('nom')
-    contact = data.get('contact')
-    adresse = data.get('adresse')
-
-    if not nom:
-        return jsonify({'erreur': 'Le champ nom est obligatoire'}), 400
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute(
-                "UPDATE fournisseur SET nom = %s, contact = %s, adresse = %s WHERE numero_fou = %s RETURNING numero_fou",
-                (nom, contact, adresse, numero_fou)
-            )
-        else:
-            cur.execute(
-                "UPDATE fournisseur SET nom = %s, contact = %s, adresse = %s WHERE numero_fou = %s AND user_id = %s RETURNING numero_fou",
-                (nom, contact, adresse, numero_fou, user_id)
-            )
-        
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Fournisseur non trouvé'}), 404
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Fournisseur modifié'}), 200
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-@app.route('/supprimer_fournisseur/<numero_fou>', methods=['DELETE'])
-def supprimer_fournisseur(numero_fou):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
-
-    try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
-        
-        if use_local:
-            cur.execute("DELETE FROM fournisseur WHERE numero_fou = %s", (numero_fou,))
-        else:
-            cur.execute("DELETE FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_fou, user_id))
-        
-        if cur.rowcount == 0:
-            cur.close()
-            conn.close()
-            return jsonify({'erreur': 'Fournisseur non trouvé'}), 404
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({'statut': 'Fournisseur supprimé'}), 200
-    except Exception as e:
-        return jsonify({'erreur': str(e)}), 500
-
-# --- Produits ---
-
 
 @app.route('/ajouter_item', methods=['POST'])
 def ajouter_item():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     designation = data.get('designation')
@@ -900,14 +1008,21 @@ def ajouter_item():
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Ajout item pour user_id: {user_id}, designation: {designation}, bar: {bar}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         cur.execute("LOCK TABLE item IN EXCLUSIVE MODE")
 
         # Vérifier l'unicité du code-barres
         if bar:
-            if use_local:
+            if is_local:
                 cur.execute("SELECT 1 FROM item WHERE bar = %s", (bar,))
             else:
                 cur.execute("SELECT 1 FROM item WHERE bar = %s AND user_id = %s", (bar, user_id))
@@ -919,7 +1034,7 @@ def ajouter_item():
                 return jsonify({'erreur': 'Ce code-barres existe déjà'}), 409
 
         # Trouver le prochain numéro disponible pour ref
-        if use_local:
+        if is_local:
             cur.execute("SELECT ref FROM item ORDER BY ref")
         else:
             cur.execute("SELECT ref FROM item WHERE user_id = %s ORDER BY ref", (user_id,))
@@ -947,7 +1062,7 @@ def ajouter_item():
             bar = f"{code12}{check_digit}"
 
         # Insérer le produit
-        if use_local:
+        if is_local:
             cur.execute(
                 "INSERT INTO item (designation, bar, prix, qte, prixba, ref) "
                 "VALUES (%s, %s, %s, %s, %s, %s) RETURNING numero_item",
@@ -964,13 +1079,16 @@ def ajouter_item():
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Item ajouté: id={item_id}, ref={ref}, bar={bar}")
         return jsonify({'statut': 'Item ajouté', 'id': item_id, 'ref': ref, 'bar': bar}), 201
     
     except ValueError:
+        logger.error(f"Erreur ValueError dans ajouter_item: prix ou qte invalide")
         if 'conn' in locals() and conn:
             conn.rollback()
         return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
+        logger.error(f"Erreur dans ajouter_item: {str(e)}")
         if 'conn' in locals() and conn:
             conn.rollback()
             conn.close()
@@ -978,11 +1096,9 @@ def ajouter_item():
 
 @app.route('/modifier_item/<numero_item>', methods=['PUT'])
 def modifier_item(numero_item):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     designation = data.get('designation')
@@ -1000,11 +1116,18 @@ def modifier_item(numero_item):
         if prix < 0 or qte < 0:
             return jsonify({'erreur': 'Le prix et la quantité doivent être positifs'}), 400
 
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Modification item numero_item: {numero_item}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'unicité de bar (sauf pour cet item)
-        if use_local:
+        if is_local:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND numero_item != %s", (bar, numero_item))
         else:
             cur.execute("SELECT 1 FROM item WHERE bar = %s AND numero_item != %s AND user_id = %s", (bar, numero_item, user_id))
@@ -1015,7 +1138,7 @@ def modifier_item(numero_item):
             return jsonify({'erreur': 'Ce code-barres est déjà utilisé'}), 409
 
         # Mettre à jour l'item
-        if use_local:
+        if is_local:
             cur.execute(
                 "UPDATE item SET designation = %s, bar = %s, prix = %s, qte = %s, prixba = %s WHERE numero_item = %s RETURNING numero_item",
                 (designation, bar, prix, qte, prixba or '0.00', numero_item)
@@ -1034,26 +1157,37 @@ def modifier_item(numero_item):
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Item modifié: numero_item={numero_item}")
         return jsonify({'statut': 'Produit modifié'}), 200
     
     except ValueError:
+        logger.error(f"Erreur ValueError dans modifier_item: prix ou qte invalide")
         return jsonify({'erreur': 'Le prix et la quantité doivent être des nombres valides'}), 400
     except Exception as e:
+        logger.error(f"Erreur dans modifier_item: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
 @app.route('/supprimer_item/<numero_item>', methods=['DELETE'])
 def supprimer_item(numero_item):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Suppression item numero_item: {numero_item}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Vérifier si la connexion est locale
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute("DELETE FROM item WHERE numero_item = %s", (numero_item,))
         else:
             cur.execute("DELETE FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
@@ -1066,22 +1200,24 @@ def supprimer_item(numero_item):
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Item supprimé: numero_item={numero_item}")
         return jsonify({'statut': 'Produit supprimé'}), 200
     except Exception as e:
+        logger.error(f"Erreur dans supprimer_item: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
-
-# --- Ventes ---
+		
 @app.route('/valider_vente', methods=['POST'])
 def valider_vente():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes'] or 'numero_util' not in data or 'password2' not in data:
-        return jsonify({"error": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
 
     numero_table = data.get('numero_table', 0)
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
@@ -1094,32 +1230,38 @@ def valider_vente():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Validation vente pour user_id: {user_id}, numero_util: {numero_util}, nature: {nature}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Verify user and password
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         
         utilisateur = cur.fetchone()
         if not utilisateur:
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
-        # Récupérer le dernier compteur pour cette nature
-        if use_local:
+        # Get the last counter for this nature
+        if is_local:
             cur.execute("SELECT COALESCE(MAX(compteur), 0) as max_compteur FROM comande WHERE nature = %s", (nature,))
         else:
             cur.execute("SELECT COALESCE(MAX(compteur), 0) as max_compteur FROM comande WHERE nature = %s AND user_id = %s", (nature, user_id))
         
         compteur = cur.fetchone()['max_compteur'] + 1
 
-        # Insérer la commande
-        if use_local:
+        # Insert the order
+        if is_local:
             cur.execute("""
                 INSERT INTO comande (numero_table, date_comande, etat_c, nature, connection1, compteur, numero_util)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -1133,10 +1275,11 @@ def valider_vente():
             """, (numero_table, date_comande, 'cloture', nature, -1, compteur, user_id, numero_util))
         
         numero_comande = cur.fetchone()['numero_comande']
+        logger.debug(f"Commande insérée: numero_comande={numero_comande}")
 
-        # Insérer les lignes et mettre à jour le stock
+        # Insert lines and update stock
         for ligne in lignes:
-            if use_local:
+            if is_local:
                 cur.execute("""
                     INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -1155,12 +1298,12 @@ def valider_vente():
                 cur.execute("UPDATE item SET qte = qte - %s WHERE numero_item = %s AND user_id = %s", 
                            (ligne.get('quantite'), ligne.get('numero_item'), user_id))
 
-        # Mise à jour du solde du client si vente à terme
+        # Update client balance if payment mode is 'a_terme'
         if payment_mode == 'a_terme' and numero_table != 0:
             total_sale = sum(float(ligne.get('prixt', 0)) for ligne in lignes)
             solde_change = amount_paid - total_sale
 
-            if use_local:
+            if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_table,))
             else:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s AND user_id = %s", (numero_table, user_id))
@@ -1169,62 +1312,80 @@ def valider_vente():
             if not client:
                 raise Exception(f"Client {numero_table} non trouvé")
 
-            current_solde = float(client['solde']) if client['solde'] and client['solde'].strip() else 0.0
+            current_solde = float(client['solde'] or '0.0')
             new_solde = current_solde + solde_change
             new_solde_str = f"{new_solde:.2f}"
 
-            if use_local:
+            if is_local:
                 cur.execute("UPDATE client SET solde = %s WHERE numero_clt = %s", (new_solde_str, numero_table))
             else:
                 cur.execute("UPDATE client SET solde = %s WHERE numero_clt = %s AND user_id = %s", 
                            (new_solde_str, numero_table, user_id))
+            logger.debug(f"Solde client mis à jour: numero_clt={numero_table}, nouveau solde={new_solde_str}")
 
         conn.commit()
+        logger.debug(f"Vente validée: numero_comande={numero_comande}")
         return jsonify({"numero_comande": numero_comande}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans valider_vente: {str(e)}")
         if conn:
             conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des soldes clients pour user_id: {user_id}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute("SELECT numero_clt, COALESCE(solde, '0.00') as solde FROM client")
         else:
             cur.execute("SELECT numero_clt, COALESCE(solde, '0.00') as solde FROM client WHERE user_id = %s", (user_id,))
         
         soldes = cur.fetchall()
-        return jsonify(soldes), 200
+        logger.debug(f"Nombre de soldes clients trouvés: {len(soldes)}")
+        
+        response = [
+            {
+                'numero_clt': row['numero_clt'],
+                'solde': f"{float(row['solde'] or 0):.2f}"
+            }
+            for row in soldes
+        ]
+        
+        return jsonify(response), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Erreur dans client_solde: {str(e)}")
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/ventes_jour', methods=['GET'])
 def ventes_jour():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
@@ -1232,10 +1393,16 @@ def ventes_jour():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des ventes du jour pour user_id: {user_id}, date: {selected_date}, numero_clt: {numero_clt}, numero_util: {numero_util}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Define date range
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -1247,7 +1414,7 @@ def ventes_jour():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Construire la requête SQL
+        # Build SQL query
         query = """
             SELECT 
                 c.numero_comande,
@@ -1273,10 +1440,11 @@ def ventes_jour():
         """
         params = [date_start, date_end]
 
-        if not use_local:
-            query = query.format(user_condition="c.user_id = %s AND a.user_id = %s")
+        if not is_local:
+            query = query.format(user_condition="c.user_id = %s AND a.user_id = %s AND i.user_id = %s")
             params.insert(0, user_id)
             params.insert(1, user_id)
+            params.insert(2, user_id)
         else:
             query = query.format(user_condition="1=1")
 
@@ -1285,21 +1453,23 @@ def ventes_jour():
                 query += " AND c.numero_table = 0"
             else:
                 query += " AND c.numero_table = %s"
-                params.append(int(numero_clt))
+                params.append(numero_clt)
 
         if numero_util:
             if numero_util == '0':
                 pass
             else:
                 query += " AND c.numero_util = %s"
-                params.append(int(numero_util))
+                params.append(numero_util)
 
         query += " ORDER BY c.numero_comande DESC"
+        logger.debug(f"Exécution de la requête ventes_jour: {query % tuple(params)}")
 
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre de lignes de ventes trouvées: {len(rows)}")
 
-        # Traitement des résultats (identique à la version originale)
+        # Process results
         tickets = []
         bons = []
         total = 0.0
@@ -1320,7 +1490,7 @@ def ventes_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'quantite': row['quantite'],
-                'prixt': str(row['prixt']),
+                'prixt': f"{float(row['prixt']):.2f}",
                 'remarque': row['remarque'] or ''
             })
 
@@ -1332,27 +1502,28 @@ def ventes_jour():
             elif vente['nature'] == 'BON DE L.':
                 bons.append(vente)
 
-        return jsonify({
+        response = {
             'tickets': tickets,
             'bons': bons,
             'total': f"{total:.2f}"
-        }), 200
+        }
+        logger.debug(f"Réponse ventes_jour: {response}")
+        return jsonify(response), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans ventes_jour: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
-# --- Articles les plus vendus ---
 @app.route('/articles_plus_vendus', methods=['GET'])
 def articles_plus_vendus():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
@@ -1360,10 +1531,16 @@ def articles_plus_vendus():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des articles plus vendus pour user_id: {user_id}, date: {selected_date}, numero_clt: {numero_clt}, numero_util: {numero_util}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Define date range
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -1375,7 +1552,7 @@ def articles_plus_vendus():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Construire la requête SQL
+        # Build SQL query
         query = """
             SELECT 
                 i.numero_item,
@@ -1391,36 +1568,37 @@ def articles_plus_vendus():
         """
         params = [date_start, date_end]
 
-        if not use_local:
-            query = query.format(user_condition="c.user_id = %s AND a.user_id = %s")
+        if not is_local:
+            query = query.format(user_condition="c.user_id = %s AND a.user_id = %s AND i.user_id = %s")
             params.insert(0, user_id)
             params.insert(1, user_id)
+            params.insert(2, user_id)
         else:
             query = query.format(user_condition="1=1")
 
-        # Filtre par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
             else:
                 query += " AND c.numero_table = %s"
-                params.append(int(numero_clt))
+                params.append(numero_clt)
 
-        # Filtre par utilisateur
         if numero_util and numero_util != '0':
             query += " AND c.numero_util = %s"
-            params.append(int(numero_util))
+            params.append(numero_util)
 
         query += """
             GROUP BY i.numero_item, i.designation
             ORDER BY quantite DESC
             LIMIT 10
         """
+        logger.debug(f"Exécution de la requête articles_plus_vendus: {query % tuple(params)}")
 
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre d'articles trouvés: {len(rows)}")
 
-        # Formater la réponse
+        # Format response
         articles = [
             {
                 'numero_item': row['numero_item'],
@@ -1434,19 +1612,19 @@ def articles_plus_vendus():
         return jsonify(articles), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans articles_plus_vendus: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/profit_by_date', methods=['GET'])
 def profit_by_date():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     selected_date = request.args.get('date')
     numero_clt = request.args.get('numero_clt')
@@ -1454,10 +1632,16 @@ def profit_by_date():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des profits par date pour user_id: {user_id}, date: {selected_date}, numero_clt: {numero_clt}, numero_util: {numero_util}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Définir la plage de dates (30 jours si aucune date spécifique)
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Define date range
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -1469,7 +1653,7 @@ def profit_by_date():
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = date_end - timedelta(days=30)
 
-        # Construire la requête SQL
+        # Build SQL query
         query = """
             SELECT 
                 DATE(c.date_comande) AS date,
@@ -1484,7 +1668,7 @@ def profit_by_date():
         """
         params = [date_start, date_end]
 
-        if not use_local:
+        if not is_local:
             query = query.format(user_condition="c.user_id = %s AND a.user_id = %s AND i.user_id = %s")
             params.insert(0, user_id)
             params.insert(1, user_id)
@@ -1492,28 +1676,28 @@ def profit_by_date():
         else:
             query = query.format(user_condition="1=1")
 
-        # Filtre par client
         if numero_clt:
             if numero_clt == '0':
                 query += " AND c.numero_table = 0"
             else:
                 query += " AND c.numero_table = %s"
-                params.append(int(numero_clt))
+                params.append(numero_clt)
 
-        # Filtre par utilisateur : uniquement si numero_util n'est pas '0'
         if numero_util != '0':
             query += " AND c.numero_util = %s"
-            params.append(int(numero_util))
+            params.append(numero_util)
 
         query += """
             GROUP BY DATE(c.date_comande)
             ORDER BY DATE(c.date_comande) DESC
         """
+        logger.debug(f"Exécution de la requête profit_by_date: {query % tuple(params)}")
 
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre de profits par date trouvés: {len(rows)}")
 
-        # Formater la réponse
+        # Format response
         profits = [
             {
                 'date': row['date'].strftime('%Y-%m-%d'),
@@ -1525,12 +1709,13 @@ def profit_by_date():
         return jsonify(profits), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans profit_by_date: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
-# ... (autres imports et code existant restent inchangés)
+            logger.debug("Connexion fermée")
 
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
@@ -1545,12 +1730,12 @@ def dashboard():
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier si la connexion est locale
+        # Check if connection is local
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
-        # Define the date range
+        # Define date range
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1661,13 +1846,13 @@ def dashboard():
             current_date += timedelta(days=1)
 
         response = {
-            'total_ca': float(kpi_data['total_ca'] or 0),
-            'total_profit': float(kpi_data['total_profit'] or 0),
+            'total_ca': f"{float(kpi_data['total_ca'] or 0):.2f}",
+            'total_profit': f"{float(kpi_data['total_profit'] or 0):.2f}",
             'sales_count': int(kpi_data['sales_count'] or 0),
             'low_stock_items': int(low_stock_count or 0),
             'top_client': {
                 'name': top_client['nom'] if top_client else 'N/A',
-                'ca': float(top_client['client_ca'] or 0) if top_client else 0
+                'ca': f"{float(top_client['client_ca'] or 0):.2f}" if top_client else '0.00'
             },
             'chart_data': {
                 'labels': chart_labels,
@@ -1697,7 +1882,7 @@ def liste_utilisateurs():
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Vérifier si la connexion est locale
+        # Check if connection is local
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
@@ -1728,13 +1913,12 @@ def liste_utilisateurs():
         if 'conn' in locals() and conn:
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+
 @app.route('/ajouter_utilisateur', methods=['POST'])
 def ajouter_utilisateur():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     nom = data.get('nom')
@@ -1748,10 +1932,17 @@ def ajouter_utilisateur():
         return jsonify({'erreur': 'Statue invalide (doit être "admin" ou "emplo")'}), 400
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Ajout utilisateur pour user_id: {user_id}, nom: {nom}, statue: {statue}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute(
                 "INSERT INTO utilisateur (nom, password2, statue) VALUES (%s, %s, %s) RETURNING numero_util",
                 (nom, password2, statue)
@@ -1762,21 +1953,24 @@ def ajouter_utilisateur():
                 (nom, password2, statue, user_id)
             )
         
-        numero_util = cur.fetchone()[0]
+        numero_util = cur.fetchone()['numero_util']
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Utilisateur ajouté: numero_util={numero_util}")
         return jsonify({'statut': 'Utilisateur ajouté', 'id': numero_util}), 201
     except Exception as e:
+        logger.error(f"Erreur dans ajouter_utilisateur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
-@app.route('/modifier_utilisateur/<int:numero_util>', methods=['PUT'])
+@app.route('/modifier_utilisateur/<numero_util>', methods=['PUT'])
 def modifier_utilisateur(numero_util):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     nom = data.get('nom')
@@ -1790,11 +1984,18 @@ def modifier_utilisateur(numero_util):
         return jsonify({'erreur': 'Statue invalide (doit être "admin" ou "emplo")'}), 400
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Modification utilisateur numero_util: {numero_util}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         if password2:
-            if use_local:
+            if is_local:
                 cur.execute(
                     "UPDATE utilisateur SET nom = %s, password2 = %s, statue = %s WHERE numero_util = %s RETURNING numero_util",
                     (nom, password2, statue, numero_util)
@@ -1805,7 +2006,7 @@ def modifier_utilisateur(numero_util):
                     (nom, password2, statue, numero_util, user_id)
                 )
         else:
-            if use_local:
+            if is_local:
                 cur.execute(
                     "UPDATE utilisateur SET nom = %s, statue = %s WHERE numero_util = %s RETURNING numero_util",
                     (nom, statue, numero_util)
@@ -1824,23 +2025,33 @@ def modifier_utilisateur(numero_util):
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Utilisateur modifié: numero_util={numero_util}")
         return jsonify({'statut': 'Utilisateur modifié'}), 200
     except Exception as e:
+        logger.error(f"Erreur dans modifier_utilisateur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
-@app.route('/supprimer_utilisateur/<int:numero_util>', methods=['DELETE'])
+@app.route('/supprimer_utilisateur/<numero_util>', methods=['DELETE'])
 def supprimer_utilisateur(numero_util):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
-        conn = get_conn(user_id, use_local)
-        cur = conn.cursor()
+        logger.debug(f"Suppression utilisateur numero_util: {numero_util}, user_id: {user_id}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute("DELETE FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("DELETE FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
@@ -1853,25 +2064,33 @@ def supprimer_utilisateur(numero_util):
         conn.commit()
         cur.close()
         conn.close()
+        logger.debug(f"Utilisateur supprimé: numero_util={numero_util}")
         return jsonify({'statut': 'Utilisateur supprimé'}), 200
     except Exception as e:
+        logger.error(f"Erreur dans supprimer_utilisateur: {str(e)}")
+        if 'conn' in locals() and conn:
+            conn.rollback()
+            conn.close()
         return jsonify({'erreur': str(e)}), 500
 
-# --- Stock ---
 @app.route('/stock_value', methods=['GET'])
 def valeur_stock():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération de la valeur du stock pour user_id: {user_id}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute("""
                 SELECT 
                     SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
@@ -1888,41 +2107,38 @@ def valeur_stock():
             """, (user_id,))
         
         result = cur.fetchone()
+        logger.debug(f"Résultat de la requête stock: {result}")
 
-        # Vérifier si result est None (aucune donnée)
-        if result is None:
-            valeur_achat = 0.0
-            valeur_vente = 0.0
-        else:
-            valeur_achat = float(result['valeur_achat'] or 0)
-            valeur_vente = float(result['valeur_vente'] or 0)
+        # Handle case where result is None
+        valeur_achat = float(result['valeur_achat'] or 0)
+        valeur_vente = float(result['valeur_vente'] or 0)
+        zakat = valeur_vente * 0.025  # 2.5% of sales value
 
-        zakat = valeur_vente * 0.025  # 2.5% de la valeur de vente
-
-        return jsonify({
+        response = {
             'valeur_achat': f"{valeur_achat:.2f}",
             'valeur_vente': f"{valeur_vente:.2f}",
             'zakat': f"{zakat:.2f}"
-        }), 200
+        }
+        logger.debug(f"Réponse valeur_stock: {response}")
+        return jsonify(response), 200
     except Exception as e:
+        logger.error(f"Erreur dans valeur_stock: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
-# --- Réceptions ---
 @app.route('/valider_reception', methods=['POST'])
 def valider_reception():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes'] or 'numero_four' not in data or 'numero_util' not in data or 'password2' not in data:
-        return jsonify({"error": "Données de réception invalides, fournisseur, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Données de réception invalides, fournisseur, utilisateur ou mot de passe manquant"}), 400
 
     numero_four = data.get('numero_four')
     numero_util = data.get('numero_util')
@@ -1932,34 +2148,40 @@ def valider_reception():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Validation réception pour user_id: {user_id}, numero_four: {numero_four}, numero_util: {numero_util}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Verify user and password
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         
         utilisateur = cur.fetchone()
         if not utilisateur:
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
-        # Vérifier le fournisseur
-        if use_local:
+        # Verify supplier
+        if is_local:
             cur.execute("SELECT numero_fou, solde FROM fournisseur WHERE numero_fou = %s", (numero_four,))
         else:
             cur.execute("SELECT numero_fou, solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_four, user_id))
         
         fournisseur = cur.fetchone()
         if not fournisseur:
-            return jsonify({"error": "Fournisseur non trouvé"}), 400
+            return jsonify({"erreur": "Fournisseur non trouvé"}), 400
 
-        # Insérer le mouvement principal
-        if use_local:
+        # Insert main movement
+        if is_local:
             cur.execute("""
                 INSERT INTO mouvement (date_m, etat_m, numero_four, refdoc, vers, nature, connection1, numero_util, cheque)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -1973,12 +2195,13 @@ def valider_reception():
             """, (datetime.utcnow(), "clôture", numero_four, "", "", nature, 0, numero_util, "", user_id))
         
         numero_mouvement = cur.fetchone()['numero_mouvement']
+        logger.debug(f"Mouvement inséré: numero_mouvement={numero_mouvement}")
 
-        # Mettre à jour refdoc
+        # Update refdoc
         cur.execute("UPDATE mouvement SET refdoc = %s WHERE numero_mouvement = %s", 
                     (str(numero_mouvement), numero_mouvement))
 
-        # Calculer le coût total
+        # Calculate total cost and process lines
         total_cost = 0.0
         for ligne in lignes:
             numero_item = ligne.get('numero_item')
@@ -1988,8 +2211,8 @@ def valider_reception():
             if qtea <= 0:
                 raise Exception("La quantité ajoutée doit être positive")
 
-            # Vérifier l'article
-            if use_local:
+            # Verify item
+            if is_local:
                 cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s", (numero_item,))
             else:
                 cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", (numero_item, user_id))
@@ -2004,8 +2227,8 @@ def valider_reception():
             nqte = current_qte + qtea
             total_cost += qtea * prixbh
 
-            # Insérer les détails dans ATTACHE2
-            if use_local:
+            # Insert details into attache2
+            if is_local:
                 cur.execute("""
                     INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -2016,45 +2239,47 @@ def valider_reception():
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (numero_item, numero_mouvement, qtea, nqte, str(prixbh)[:30], str(prixba)[:30], True, user_id))
 
-            # Mettre à jour le stock et le prix d'achat
-            if use_local:
+            # Update stock and purchase price
+            if is_local:
                 cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s", 
                             (nqte, str(prixbh), numero_item))
             else:
                 cur.execute("UPDATE item SET qte = %s, prixba = %s WHERE numero_item = %s AND user_id = %s", 
                             (nqte, str(prixbh), numero_item, user_id))
 
-        # Mettre à jour le solde du fournisseur
-        current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
-        new_solde = current_solde - total_cost  # Dette = montant versé - total (négatif si dette)
+        # Update supplier balance
+        current_solde = float(fournisseur['solde'] or '0.0')
+        new_solde = current_solde - total_cost
         new_solde_str = f"{new_solde:.2f}"
 
-        if use_local:
+        if is_local:
             cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s", 
                         (new_solde_str, numero_four))
         else:
             cur.execute("UPDATE fournisseur SET solde = %s WHERE numero_fou = %s AND user_id = %s", 
                         (new_solde_str, numero_four, user_id))
+        logger.debug(f"Solde fournisseur mis à jour: numero_fou={numero_four}, nouveau solde={new_solde_str}")
 
         conn.commit()
+        logger.debug(f"Réception validée: numero_mouvement={numero_mouvement}")
         return jsonify({"numero_mouvement": numero_mouvement}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans valider_reception: {str(e)}")
         if conn:
             conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/receptions_jour', methods=['GET'])
 def receptions_jour():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     selected_date = request.args.get('date')
     numero_util = request.args.get('numero_util')
@@ -2062,9 +2287,16 @@ def receptions_jour():
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération des réceptions du jour pour user_id: {user_id}, date: {selected_date}, numero_util: {numero_util}, numero_four: {numero_four}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        # Define date range
         if selected_date:
             try:
                 date_obj = datetime.strptime(selected_date, '%Y-%m-%d')
@@ -2076,7 +2308,7 @@ def receptions_jour():
             date_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
 
-        # Construire la requête SQL
+        # Build SQL query
         query = """
             SELECT 
                 m.numero_mouvement,
@@ -2102,7 +2334,7 @@ def receptions_jour():
         """
         params = [date_start, date_end]
 
-        if not use_local:
+        if not is_local:
             query = query.format(user_condition="m.user_id = %s AND a2.user_id = %s AND i.user_id = %s")
             params.insert(0, user_id)
             params.insert(1, user_id)
@@ -2112,17 +2344,19 @@ def receptions_jour():
 
         if numero_util and numero_util != '0':
             query += " AND m.numero_util = %s"
-            params.append(int(numero_util))
+            params.append(numero_util)
         if numero_four and numero_four != '':
             query += " AND m.numero_four = %s"
             params.append(numero_four)
 
         query += " ORDER BY m.numero_mouvement DESC"
+        logger.debug(f"Exécution de la requête receptions_jour: {query % tuple(params)}")
 
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre de lignes de réceptions trouvées: {len(rows)}")
 
-        # Traitement des résultats (identique à la version originale)
+        # Process results
         receptions = []
         total = 0.0
         receptions_map = {}
@@ -2142,38 +2376,43 @@ def receptions_jour():
                 'numero_item': row['numero_item'],
                 'designation': row['designation'],
                 'qtea': row['qtea'],
-                'nprix': str(row['nprix']),
-                'total_ligne': str(float(row['qtea']) * float(row['nprix']))
+                'nprix': f"{float(row['nprix']):.2f}",
+                'total_ligne': f"{float(row['qtea']) * float(row['nprix']):.2f}"
             })
 
             total += float(row['qtea']) * float(row['nprix'])
 
         receptions = list(receptions_map.values())
 
-        return jsonify({
+        response = {
             'receptions': receptions,
             'total': f"{total:.2f}"
-        }), 200
+        }
+        logger.debug(f"Réponse receptions_jour: {response}")
+        return jsonify(response), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans receptions_jour: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
+			
 
 # --- Versements ---
+
 @app.route('/ajouter_versement', methods=['POST'])
 def ajouter_versement():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data or 'password2' not in data:
-        return jsonify({"error": "Type, numéro client/fournisseur, montant, utilisateur ou mot de passe manquant"}), 400
+        logger.error("Données d'annulation invalides")
+        return jsonify({"erreur": "Type, numéro client/fournisseur, montant, utilisateur ou mot de passe manquant"}), 400
 
     type_versement = data.get('type')  # 'C' pour client, 'F' pour fournisseur
     numero_cf = data.get('numero_cf')
@@ -2183,32 +2422,39 @@ def ajouter_versement():
     password2 = data.get('password2')
 
     if type_versement not in ['C', 'F']:
-        return jsonify({"error": "Type invalide (doit être 'C' ou 'F')"}), 400
+        return jsonify({"erreur": "Type invalide (doit être 'C' ou 'F')"}), 400
 
     try:
         montant = float(montant)
         if montant == 0:
-            return jsonify({"error": "Le montant ne peut pas être zéro"}), 400
+            return jsonify({"erreur": "Le montant ne peut pas être zéro"}), 400
 
-        conn = get_conn(user_id, use_local)
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", (numero_util, user_id))
         
         utilisateur = cur.fetchone()
         if not utilisateur:
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            logger.error(f"Utilisateur {numero_util} non trouvé")
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            logger.error(f"Mot de passe incorrect pour l'utilisateur {numero_util}")
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Vérifier client ou fournisseur
         if type_versement == 'C':
-            if use_local:
+            if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", (numero_cf,))
             else:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s AND user_id = %s", (numero_cf, user_id))
@@ -2217,7 +2463,7 @@ def ajouter_versement():
             id_column = 'numero_clt'
             origine = 'VERSEMENT C'
         else:  # 'F'
-            if use_local:
+            if is_local:
                 cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s", (numero_cf,))
             else:
                 cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", (numero_cf, user_id))
@@ -2228,14 +2474,15 @@ def ajouter_versement():
 
         entity = cur.fetchone()
         if not entity:
-            return jsonify({"error": f"{'Client' if type_versement == 'C' else 'Fournisseur'} non trouvé"}), 400
+            logger.error(f"{'Client' if type_versement == 'C' else 'Fournisseur'} {numero_cf} non trouvé")
+            return jsonify({"erreur": f"{'Client' if type_versement == 'C' else 'Fournisseur'} non trouvé"}), 400
 
         # Mettre à jour le solde
         current_solde = float(entity['solde'] or '0.0')
         new_solde = current_solde + montant  # Montant peut être positif ou négatif
         new_solde_str = f"{new_solde:.2f}"
 
-        if use_local:
+        if is_local:
             cur.execute(f"UPDATE {table} SET solde = %s WHERE {id_column} = %s",
                         (new_solde_str, numero_cf))
         else:
@@ -2244,7 +2491,7 @@ def ajouter_versement():
 
         # Insérer le versement dans MOUVEMENTC
         now = datetime.utcnow()
-        if use_local:
+        if is_local:
             cur.execute(
                 """
                 INSERT INTO MOUVEMENTC (date_mc, time_mc, montant, justificatif, numero_util, origine, cf, numero_cf)
@@ -2266,36 +2513,44 @@ def ajouter_versement():
             )
         
         numero_mc = cur.fetchone()['numero_mc']
+        logger.debug(f"Versement ajouté: numero_mc={numero_mc}, type={type_versement}, montant={montant}")
 
         conn.commit()
         return jsonify({"numero_mc": numero_mc, "statut": "Versement ajouté"}), 201
 
     except ValueError:
-        return jsonify({"error": "Le montant doit être un nombre valide"}), 400
+        logger.error("Le montant doit être un nombre valide")
+        return jsonify({"erreur": "Le montant doit être un nombre valide"}), 400
     except Exception as e:
+        logger.error(f"Erreur dans ajouter_versement: {str(e)}")
         if conn:
             conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/historique_versements', methods=['GET'])
 def historique_versements():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     selected_date = request.args.get('date')
     type_versement = request.args.get('type')  # 'C', 'F', ou vide pour tous
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération historique versements pour user_id: {user_id}, date: {selected_date}, type: {type_versement}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
         # Définir la plage de dates (30 jours si aucune date spécifique)
         if selected_date:
@@ -2304,6 +2559,7 @@ def historique_versements():
                 date_start = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
                 date_end = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
             except ValueError:
+                logger.error("Format de date invalide")
                 return jsonify({'erreur': 'Format de date invalide (attendu: YYYY-MM-DD)'}), 400
         else:
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -2332,9 +2588,12 @@ def historique_versements():
         """
         params = [date_start, date_end]
 
-        if not use_local:
-            query = query.format(user_condition="mc.user_id = %s")
+        if not is_local:
+            query = query.format(user_condition="mc.user_id = %s AND cl.user_id = %s AND f.user_id = %s AND u.user_id = %s")
             params.insert(0, user_id)
+            params.insert(1, user_id)
+            params.insert(2, user_id)
+            params.insert(3, user_id)
         else:
             query = query.format(user_condition="1=1")
 
@@ -2343,16 +2602,18 @@ def historique_versements():
             params.append(type_versement)
 
         query += " ORDER BY mc.date_mc DESC, mc.time_mc DESC"
+        logger.debug(f"Exécution de la requête historique_versements: {query % tuple(params)}")
 
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre de versements trouvés: {len(rows)}")
 
         # Formater la réponse
         versements = [
             {
                 'numero_mc': row['numero_mc'],
                 'date_mc': row['date_mc'].strftime('%Y-%m-%d'),
-                'montant': str(row['montant']),
+                'montant': f"{float(row['montant']):.2f}",
                 'justificatif': row['justificatif'] or '',
                 'type': 'Client' if row['cf'] == 'C' else 'Fournisseur',
                 'numero_cf': row['numero_cf'],
@@ -2365,27 +2626,24 @@ def historique_versements():
         return jsonify(versements), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans historique_versements: {str(e)}")
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
-
-
-# --- Versements ---
 @app.route('/annuler_versement', methods=['DELETE'])
 def annuler_versement():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'numero_mc' not in data or 'type' not in data or 'numero_cf' not in data or 'numero_util' not in data or 'password2' not in data:
         logger.error("Données d'annulation invalides")
-        return jsonify({"error": "Numéro de versement, type, numéro client/fournisseur, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Numéro de versement, type, numéro client/fournisseur, utilisateur ou mot de passe manquant"}), 400
 
     numero_mc = data.get('numero_mc')
     type_versement = data.get('type')
@@ -2394,16 +2652,22 @@ def annuler_versement():
     password2 = data.get('password2')
 
     if type_versement not in ['C', 'F']:
-        return jsonify({"error": "Type invalide (doit être 'C' ou 'F')"}), 400
+        return jsonify({"erreur": "Type invalide (doit être 'C' ou 'F')"}), 400
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Annulation versement pour user_id: {user_id}, numero_mc: {numero_mc}, type: {type_versement}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", 
@@ -2412,13 +2676,13 @@ def annuler_versement():
         utilisateur = cur.fetchone()
         if not utilisateur:
             logger.error(f"Utilisateur {numero_util} non trouvé")
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour l'utilisateur {numero_util}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Récupérer le versement
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT montant, cf, numero_cf 
                 FROM MOUVEMENTC 
@@ -2434,7 +2698,7 @@ def annuler_versement():
         versement = cur.fetchone()
         if not versement:
             logger.error(f"Versement {numero_mc} non trouvé")
-            return jsonify({"error": "Versement non trouvé"}), 404
+            return jsonify({"erreur": "Versement non trouvé"}), 404
 
         montant = float(versement['montant'])
 
@@ -2447,7 +2711,7 @@ def annuler_versement():
             id_column = 'numero_fou'
 
         # Vérifier l'entité
-        if use_local:
+        if is_local:
             cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s", (numero_cf,))
         else:
             cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s AND user_id = %s", 
@@ -2456,14 +2720,14 @@ def annuler_versement():
         entity = cur.fetchone()
         if not entity:
             logger.error(f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} {numero_cf} non trouvé")
-            return jsonify({"error": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
+            return jsonify({"erreur": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
 
         # Restaurer le solde
         current_solde = float(entity['solde'] or '0.0')
         new_solde = current_solde - montant  # Inverser l'effet du versement
         new_solde_str = f"{new_solde:.2f}"
 
-        if use_local:
+        if is_local:
             cur.execute(f"UPDATE {table} SET solde = %s WHERE {id_column} = %s",
                         (new_solde_str, numero_cf))
         else:
@@ -2471,7 +2735,7 @@ def annuler_versement():
                         (new_solde_str, numero_cf, user_id))
 
         # Supprimer le versement
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM MOUVEMENTC WHERE numero_mc = %s", (numero_mc,))
         else:
             cur.execute("DELETE FROM MOUVEMENTC WHERE numero_mc = %s AND user_id = %s", 
@@ -2482,27 +2746,26 @@ def annuler_versement():
         return jsonify({"statut": "Versement annulé"}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans annuler_versement: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur annulation versement: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/modifier_versement', methods=['PUT'])
 def modifier_versement():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'numero_mc' not in data or 'type' not in data or 'numero_cf' not in data or 'montant' not in data or 'numero_util' not in data or 'password2' not in data:
         logger.error("Données de modification invalides")
-        return jsonify({"error": "Numéro de versement, type, numéro client/fournisseur, montant, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Numéro de versement, type, numéro client/fournisseur, montant, utilisateur ou mot de passe manquant"}), 400
 
     numero_mc = data.get('numero_mc')
     type_versement = data.get('type')
@@ -2513,19 +2776,24 @@ def modifier_versement():
     password2 = data.get('password2')
 
     if type_versement not in ['C', 'F']:
-        return jsonify({"error": "Type invalide (doit être 'C' ou 'F')"}), 400
+        return jsonify({"erreur": "Type invalide (doit être 'C' ou 'F')"}), 400
 
     try:
         montant = float(montant)
         if montant == 0:
-            return jsonify({"error": "Le montant ne peut pas être zéro"}), 400
+            return jsonify({"erreur": "Le montant ne peut pas être zéro"}), 400
 
-        conn = get_conn(user_id, use_local)
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", 
@@ -2534,13 +2802,13 @@ def modifier_versement():
         utilisateur = cur.fetchone()
         if not utilisateur:
             logger.error(f"Utilisateur {numero_util} non trouvé")
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour l'utilisateur {numero_util}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Récupérer le versement existant
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT montant, cf, numero_cf 
                 FROM MOUVEMENTC 
@@ -2556,7 +2824,7 @@ def modifier_versement():
         versement = cur.fetchone()
         if not versement:
             logger.error(f"Versement {numero_mc} non trouvé")
-            return jsonify({"error": "Versement non trouvé"}), 404
+            return jsonify({"erreur": "Versement non trouvé"}), 404
 
         old_montant = float(versement['montant'])
 
@@ -2571,7 +2839,7 @@ def modifier_versement():
             origine = 'VERSEMENT F'
 
         # Vérifier l'entité
-        if use_local:
+        if is_local:
             cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s", (numero_cf,))
         else:
             cur.execute(f"SELECT solde FROM {table} WHERE {id_column} = %s AND user_id = %s", 
@@ -2580,14 +2848,14 @@ def modifier_versement():
         entity = cur.fetchone()
         if not entity:
             logger.error(f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} {numero_cf} non trouvé")
-            return jsonify({"error": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
+            return jsonify({"erreur": f"{'Client' if versement['cf'] == 'C' else 'Fournisseur'} non trouvé"}), 400
 
         # Ajuster le solde
         current_solde = float(entity['solde'] or '0.0')
         new_solde = current_solde - old_montant + montant  # Annuler l'ancien montant et appliquer le nouveau
         new_solde_str = f"{new_solde:.2f}"
 
-        if use_local:
+        if is_local:
             cur.execute(f"UPDATE {table} SET solde = %s WHERE {id_column} = %s",
                         (new_solde_str, numero_cf))
         else:
@@ -2596,7 +2864,7 @@ def modifier_versement():
 
         # Mettre à jour le versement
         now = datetime.utcnow()
-        if use_local:
+        if is_local:
             cur.execute(
                 """
                 UPDATE MOUVEMENTC 
@@ -2620,39 +2888,47 @@ def modifier_versement():
         return jsonify({"statut": "Versement modifié"}), 200
 
     except ValueError:
-        return jsonify({"error": "Le montant doit être un nombre valide"}), 400
+        logger.error("Le montant doit être un nombre valide")
+        return jsonify({"erreur": "Le montant doit être un nombre valide"}), 400
     except Exception as e:
+        logger.error(f"Erreur dans modifier_versement: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur modification versement: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 @app.route('/situation_versements', methods=['GET'])
 def situation_versements():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     type_versement = request.args.get('type')  # 'C' ou 'F'
     numero_cf = request.args.get('numero_cf')  # ID du client ou fournisseur
 
     if not type_versement or type_versement not in ['C', 'F']:
+        logger.error("Paramètre 'type' invalide")
         return jsonify({'erreur': "Paramètre 'type' requis et doit être 'C' ou 'F'"}), 400
     if not numero_cf:
+        logger.error("Paramètre 'numero_cf' manquant")
         return jsonify({'erreur': "Paramètre 'numero_cf' requis"}), 400
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération situation versements pour user_id: {user_id}, type: {type_versement}, numero_cf: {numero_cf}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        if use_local:
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             query = """
                 SELECT 
                     mc.numero_mc,
@@ -2673,6 +2949,7 @@ def situation_versements():
                 AND mc.numero_cf = %s
                 ORDER BY mc.date_mc DESC, mc.time_mc DESC
             """
+            params = [type_versement, numero_cf]
         else:
             query = """
                 SELECT 
@@ -2695,16 +2972,18 @@ def situation_versements():
                 AND mc.numero_cf = %s
                 ORDER BY mc.date_mc DESC, mc.time_mc DESC
             """
+            params = [user_id, user_id, user_id, user_id, type_versement, numero_cf]
 
-        params = [type_versement, numero_cf] if use_local else [user_id, user_id, user_id, user_id, type_versement, numero_cf]
+        logger.debug(f"Exécution de la requête situation_versements: {query % tuple(params)}")
         cur.execute(query, params)
         rows = cur.fetchall()
+        logger.debug(f"Nombre de versements trouvés: {len(rows)}")
 
         versements = [
             {
                 'numero_mc': row['numero_mc'],
                 'date_mc': row['date_mc'].strftime('%Y-%m-%d'),
-                'montant': str(row['montant']),
+                'montant': f"{float(row['montant']):.2f}",
                 'justificatif': row['justificatif'] or '',
                 'cf': row['cf'],
                 'numero_cf': row['numero_cf'],
@@ -2714,42 +2993,47 @@ def situation_versements():
             for row in rows
         ]
 
-        cur.close()
-        conn.close()
-        logger.info(f"Situation versements: type={type_versement}, numero_cf={numero_cf}, {len(versements)} versements")
         return jsonify(versements), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans situation_versements: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur récupération situation versements: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
-	# --- Ventes ---
+            logger.debug("Connexion fermée")
+
+# --- Ventes ---
+
 @app.route('/annuler_vente', methods=['POST'])
 def annuler_vente():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'numero_comande' not in data or 'password2' not in data:
         logger.error("Données d'annulation vente invalides")
-        return jsonify({"error": "Numéro de commande ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Numéro de commande ou mot de passe manquant"}), 400
 
     numero_comande = data.get('numero_comande')
     password2 = data.get('password2')
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Annulation vente pour user_id: {user_id}, numero_comande: {numero_comande}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'existence de la commande et récupérer l'utilisateur
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT c.numero_table, c.nature, c.numero_util, u.password2 
                 FROM comande c
@@ -2767,15 +3051,15 @@ def annuler_vente():
         commande = cur.fetchone()
         if not commande:
             logger.error(f"Commande {numero_comande} non trouvée")
-            return jsonify({"error": "Commande non trouvée"}), 404
+            return jsonify({"erreur": "Commande non trouvée"}), 404
 
         # Vérifier le mot de passe
         if commande['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour annuler la commande {numero_comande}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la vente
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT numero_item, quantite, prixt
                 FROM attache 
@@ -2792,11 +3076,11 @@ def annuler_vente():
 
         if not lignes:
             logger.error(f"Aucune ligne trouvée pour la commande {numero_comande}")
-            return jsonify({"error": "Aucune ligne de vente trouvée"}), 404
+            return jsonify({"erreur": "Aucune ligne de vente trouvée"}), 404
 
         # Restaurer le stock dans item
         for ligne in lignes:
-            if use_local:
+            if is_local:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte + %s 
@@ -2810,9 +3094,9 @@ def annuler_vente():
                 """, (ligne['quantite'], ligne['numero_item'], user_id))
 
         # Si vente à terme (numero_table != 0), ajuster le solde du client
-        if commande['numero_table'] != 0:
-            total_sale = sum(float(ligne['prixt']) for ligne in lignes)
-            if use_local:
+        if commande['numero_table'] != '0':
+            total_sale = sum(float(ligne['prixt'] or 0) for ligne in lignes)
+            if is_local:
                 cur.execute("SELECT solde FROM client WHERE numero_clt = %s", 
                            (commande['numero_table'],))
             else:
@@ -2821,13 +3105,14 @@ def annuler_vente():
                 
             client = cur.fetchone()
             if not client:
+                logger.error(f"Client {commande['numero_table']} non trouvé")
                 raise Exception(f"Client {commande['numero_table']} non trouvé")
             
             current_solde = float(client['solde'] or '0.0')
             new_solde = current_solde - total_sale  # Réduire la dette (inverser la vente)
             new_solde_str = f"{new_solde:.2f}"
             
-            if use_local:
+            if is_local:
                 cur.execute("""
                     UPDATE client 
                     SET solde = %s 
@@ -2840,17 +3125,17 @@ def annuler_vente():
                     WHERE numero_clt = %s AND user_id = %s
                 """, (new_solde_str, commande['numero_table'], user_id))
                 
-            logger.info(f"Solde client mis à jour: numero_clt={commande['numero_table']}, total_sale={total_sale}, new_solde={new_solde_str}")
+            logger.debug(f"Solde client mis à jour: numero_clt={commande['numero_table']}, total_sale={total_sale}, new_solde={new_solde_str}")
 
         # Supprimer les lignes de attache
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM attache WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("DELETE FROM attache WHERE numero_comande = %s AND user_id = %s", 
                         (numero_comande, user_id))
 
         # Supprimer la commande
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM comande WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("DELETE FROM comande WHERE numero_comande = %s AND user_id = %s", 
@@ -2861,40 +3146,46 @@ def annuler_vente():
         return jsonify({"statut": "Vente annulée"}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans annuler_vente: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur annulation vente: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 # --- Réceptions ---
+
 @app.route('/annuler_reception', methods=['POST'])
 def annuler_reception():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'numero_mouvement' not in data or 'password2' not in data:
         logger.error("Données d'annulation réception invalides")
-        return jsonify({"error": "Numéro de mouvement ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Numéro de mouvement ou mot de passe manquant"}), 400
 
     numero_mouvement = data.get('numero_mouvement')
     password2 = data.get('password2')
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Annulation réception pour user_id: {user_id}, numero_mouvement: {numero_mouvement}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'existence du mouvement et récupérer l'utilisateur
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT m.numero_four, m.numero_util, u.password2 
                 FROM mouvement m
@@ -2912,15 +3203,15 @@ def annuler_reception():
         mouvement = cur.fetchone()
         if not mouvement:
             logger.error(f"Mouvement {numero_mouvement} non trouvé")
-            return jsonify({"error": "Mouvement non trouvé"}), 404
+            return jsonify({"erreur": "Mouvement non trouvé"}), 404
 
         # Vérifier le mot de passe
         if mouvement['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour annuler le mouvement {numero_mouvement}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Récupérer les lignes de la réception
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT numero_item, qtea, nprix 
                 FROM attache2 
@@ -2937,14 +3228,14 @@ def annuler_reception():
 
         if not lignes:
             logger.error(f"Aucune ligne trouvée pour le mouvement {numero_mouvement}")
-            return jsonify({"error": "Aucune ligne de réception trouvée"}), 404
+            return jsonify({"erreur": "Aucune ligne de réception trouvée"}), 404
 
         # Calculer le coût total de la réception
-        total_cost = sum(float(ligne['qtea']) * float(ligne['nprix']) for ligne in lignes)
+        total_cost = sum(float(ligne['qtea']) * float(ligne['nprix'] or 0) for ligne in lignes)
 
         # Restaurer le stock dans item
         for ligne in lignes:
-            if use_local:
+            if is_local:
                 cur.execute("""
                     UPDATE item 
                     SET qte = qte - %s 
@@ -2958,7 +3249,7 @@ def annuler_reception():
                 """, (ligne['qtea'], ligne['numero_item'], user_id))
 
         # Mettre à jour le solde du fournisseur
-        if use_local:
+        if is_local:
             cur.execute("SELECT solde FROM fournisseur WHERE numero_fou = %s", 
                        (mouvement['numero_four'],))
         else:
@@ -2967,13 +3258,14 @@ def annuler_reception():
             
         fournisseur = cur.fetchone()
         if not fournisseur:
+            logger.error(f"Fournisseur {mouvement['numero_four']} non trouvé")
             raise Exception(f"Fournisseur {mouvement['numero_four']} non trouvé")
 
         current_solde = float(fournisseur['solde'] or '0.0')
         new_solde = current_solde + total_cost  # Inverser l'effet de la réception
         new_solde_str = f"{new_solde:.2f}"
 
-        if use_local:
+        if is_local:
             cur.execute("""
                 UPDATE fournisseur 
                 SET solde = %s 
@@ -2986,17 +3278,17 @@ def annuler_reception():
                 WHERE numero_fou = %s AND user_id = %s
             """, (new_solde_str, mouvement['numero_four'], user_id))
                 
-        logger.info(f"Solde fournisseur mis à jour: numero_fou={mouvement['numero_four']}, total_cost={total_cost}, new_solde={new_solde_str}")
+        logger.debug(f"Solde fournisseur mis à jour: numero_fou={mouvement['numero_four']}, total_cost={total_cost}, new_solde={new_solde_str}")
 
         # Supprimer les lignes de attache2
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s", (numero_mouvement,))
         else:
             cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s AND user_id = %s", 
                         (numero_mouvement, user_id))
 
         # Supprimer le mouvement
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM mouvement WHERE numero_mouvement = %s", (numero_mouvement,))
         else:
             cur.execute("DELETE FROM mouvement WHERE numero_mouvement = %s AND user_id = %s", 
@@ -3007,44 +3299,50 @@ def annuler_reception():
         return jsonify({"statut": "Réception annulée"}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans annuler_reception: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur annulation réception: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 # --- Modification de vente ---
-@app.route('/modifier_vente/<int:numero_comande>', methods=['PUT'])
+
+@app.route('/modifier_vente/<numero_comande>', methods=['PUT'])
 def modifier_vente(numero_comande):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes'] or 'numero_util' not in data or 'password2' not in data:
         logger.error("Données de vente invalides")
-        return jsonify({"error": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Données de vente invalides, utilisateur ou mot de passe manquant"}), 400
 
-    numero_table = data.get('numero_table', 0)
+    numero_table = data.get('numero_table', '0')
     date_comande = data.get('date_comande', datetime.utcnow().isoformat())
     lignes = data['lignes']
-    numero_util = data['numero_util']
-    password2 = data['password2']
-    nature = "TICKET" if numero_table == 0 else "BON DE L."
+    numero_util = data.get('numero_util')
+    password2 = data.get('password2')
+    nature = "TICKET" if numero_table == '0' else "BON DE L."
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Modification vente pour user_id: {user_id}, numero_comande: {numero_comande}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", 
@@ -3053,10 +3351,10 @@ def modifier_vente(numero_comande):
         utilisateur = cur.fetchone()
         if not utilisateur or utilisateur['password2'] != password2:
             logger.error("Utilisateur ou mot de passe incorrect")
-            return jsonify({"error": "Utilisateur ou mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Utilisateur ou mot de passe incorrect"}), 401
 
         # Vérifier l'existence de la commande
-        if use_local:
+        if is_local:
             cur.execute("SELECT * FROM comande WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("SELECT * FROM comande WHERE numero_comande = %s AND user_id = %s", 
@@ -3064,10 +3362,10 @@ def modifier_vente(numero_comande):
             
         if not cur.fetchone():
             logger.error(f"Commande {numero_comande} non trouvée")
-            return jsonify({"error": "Commande non trouvée"}), 404
+            return jsonify({"erreur": "Commande non trouvée"}), 404
 
         # Restaurer le stock des anciens articles
-        if use_local:
+        if is_local:
             cur.execute("SELECT numero_item, quantite FROM attache WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("SELECT numero_item, quantite FROM attache WHERE numero_comande = %s AND user_id = %s", 
@@ -3075,7 +3373,7 @@ def modifier_vente(numero_comande):
             
         old_lignes = cur.fetchall()
         for ligne in old_lignes:
-            if use_local:
+            if is_local:
                 cur.execute("UPDATE item SET qte = qte + %s WHERE numero_item = %s",
                            (ligne['quantite'], ligne['numero_item']))
             else:
@@ -3083,14 +3381,14 @@ def modifier_vente(numero_comande):
                            (ligne['quantite'], ligne['numero_item'], user_id))
 
         # Supprimer les anciennes lignes
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM attache WHERE numero_comande = %s", (numero_comande,))
         else:
             cur.execute("DELETE FROM attache WHERE numero_comande = %s AND user_id = %s", 
                        (numero_comande, user_id))
 
         # Mettre à jour la commande (sans toucher au solde)
-        if use_local:
+        if is_local:
             cur.execute("""
                 UPDATE comande 
                 SET numero_table = %s, date_comande = %s, nature = %s, numero_util = %s
@@ -3105,7 +3403,7 @@ def modifier_vente(numero_comande):
 
         # Insérer les nouvelles lignes et ajuster le stock
         for ligne in lignes:
-            if use_local:
+            if is_local:
                 cur.execute("""
                     INSERT INTO attache (numero_comande, numero_item, quantite, prixt, remarque, prixbh, achatfx)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -3129,31 +3427,37 @@ def modifier_vente(numero_comande):
         return jsonify({"numero_comande": numero_comande, "statut": "Vente modifiée"}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans modifier_vente: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur modification vente: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 # --- Consultation de vente ---
-@app.route('/vente/<int:numero_comande>', methods=['GET'])
+
+@app.route('/vente/<numero_comande>', methods=['GET'])
 def get_vente(numero_comande):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération vente pour user_id: {user_id}, numero_comande: {numero_comande}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Récupérer les détails de la commande
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT c.numero_comande, c.numero_table, c.date_comande, c.nature, c.numero_util,
                        cl.nom AS client_nom, u.nom AS utilisateur_nom
@@ -3176,10 +3480,10 @@ def get_vente(numero_comande):
 
         if not commande:
             logger.error(f"Commande {numero_comande} non trouvée")
-            return jsonify({"error": "Commande non trouvée"}), 404
+            return jsonify({"erreur": "Commande non trouvée"}), 404
 
         # Récupérer les lignes de la commande
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT a.numero_item, a.quantite, a.prixt, a.remarque, a.prixbh, i.designation
                 FROM attache a
@@ -3209,41 +3513,47 @@ def get_vente(numero_comande):
                     'numero_item': ligne['numero_item'],
                     'designation': ligne['designation'],
                     'quantite': ligne['quantite'],
-                    'prixt': str(ligne['prixt']),
+                    'prixt': f"{float(ligne['prixt'] or 0):.2f}",
                     'remarque': ligne['remarque'] or '',
-                    'prixbh': str(ligne['prixbh'])
+                    'prixbh': f"{float(ligne['prixbh'] or 0):.2f}"
                 }
                 for ligne in lignes
             ]
         }
 
-        cur.close()
-        conn.close()
+        logger.debug(f"Vente récupérée: {response}")
         return jsonify(response), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans get_vente: {str(e)}")
+        return jsonify({"erreur": str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur récupération vente: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+            logger.debug("Connexion fermée")
 
 # --- Consultation de réception ---
-@app.route('/reception/<int:numero_mouvement>', methods=['GET'])
+
+@app.route('/reception/<numero_mouvement>', methods=['GET'])
 def get_reception(numero_mouvement):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération réception pour user_id: {user_id}, numero_mouvement: {numero_mouvement}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Récupérer les détails du mouvement
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT m.numero_mouvement, m.numero_four, m.date_m, m.nature, m.numero_util,
                        f.nom AS fournisseur_nom, u.nom AS utilisateur_nom
@@ -3266,10 +3576,10 @@ def get_reception(numero_mouvement):
 
         if not mouvement:
             logger.error(f"Réception {numero_mouvement} non trouvée")
-            return jsonify({"error": "Réception non trouvée"}), 404
+            return jsonify({"erreur": "Réception non trouvée"}), 404
 
         # Récupérer les lignes du mouvement
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT a2.numero_item, a2.qtea, a2.nprix, a2.nqte, a2.pump, i.designation
                 FROM attache2 a2
@@ -3299,36 +3609,38 @@ def get_reception(numero_mouvement):
                     'numero_item': ligne['numero_item'],
                     'designation': ligne['designation'],
                     'qtea': ligne['qtea'],
-                    'nprix': str(ligne['nprix']),
+                    'nprix': f"{float(ligne['nprix'] or 0):.2f}",
                     'nqte': ligne['nqte'],
-                    'pump': str(ligne['pump'])
+                    'pump': f"{float(ligne['pump'] or 0):.2f}"
                 }
                 for ligne in lignes
             ]
         }
 
-        cur.close()
-        conn.close()
+        logger.debug(f"Réception récupérée: {response}")
         return jsonify(response), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans get_reception: {str(e)}")
+        return jsonify({"erreur": str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur récupération réception: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-@app.route('/modifier_reception/<int:numero_mouvement>', methods=['PUT'])
+            logger.debug("Connexion fermée")
+
+# --- Modifier Réception ---
+
+@app.route('/modifier_reception/<numero_mouvement>', methods=['PUT'])
 def modifier_reception(numero_mouvement):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     if not data or 'lignes' not in data or not data['lignes'] or 'numero_four' not in data or 'numero_util' not in data or 'password2' not in data:
         logger.error("Données de réception invalides")
-        return jsonify({"error": "Données de réception invalides, fournisseur, utilisateur ou mot de passe manquant"}), 400
+        return jsonify({"erreur": "Données de réception invalides, fournisseur, utilisateur ou mot de passe manquant"}), 400
 
     numero_four = data.get('numero_four')
     numero_util = data.get('numero_util')
@@ -3337,12 +3649,18 @@ def modifier_reception(numero_mouvement):
 
     conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Modification réception pour user_id: {user_id}, numero_mouvement: {numero_mouvement}")
+        conn = get_conn(user_id)
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'utilisateur et le mot de passe
-        if use_local:
+        if is_local:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s", (numero_util,))
         else:
             cur.execute("SELECT Password2 FROM utilisateur WHERE numero_util = %s AND user_id = %s", 
@@ -3351,13 +3669,13 @@ def modifier_reception(numero_mouvement):
         utilisateur = cur.fetchone()
         if not utilisateur:
             logger.error(f"Utilisateur {numero_util} non trouvé")
-            return jsonify({"error": "Utilisateur non trouvé"}), 400
+            return jsonify({"erreur": "Utilisateur non trouvé"}), 400
         if utilisateur['password2'] != password2:
             logger.error(f"Mot de passe incorrect pour l'utilisateur {numero_util}")
-            return jsonify({"error": "Mot de passe incorrect"}), 401
+            return jsonify({"erreur": "Mot de passe incorrect"}), 401
 
         # Vérifier le fournisseur
-        if use_local:
+        if is_local:
             cur.execute("SELECT numero_fou, solde FROM fournisseur WHERE numero_fou = %s", (numero_four,))
         else:
             cur.execute("SELECT numero_fou, solde FROM fournisseur WHERE numero_fou = %s AND user_id = %s", 
@@ -3366,10 +3684,10 @@ def modifier_reception(numero_mouvement):
         fournisseur = cur.fetchone()
         if not fournisseur:
             logger.error(f"Fournisseur {numero_four} non trouvé")
-            return jsonify({"error": "Fournisseur non trouvé"}), 400
+            return jsonify({"erreur": "Fournisseur non trouvé"}), 400
 
         # Vérifier que la réception existe
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT numero_mouvement, numero_four 
                 FROM mouvement 
@@ -3385,10 +3703,10 @@ def modifier_reception(numero_mouvement):
         mouvement = cur.fetchone()
         if not mouvement:
             logger.error(f"Réception {numero_mouvement} non trouvée")
-            return jsonify({"error": "Réception non trouvée"}), 404
+            return jsonify({"erreur": "Réception non trouvée"}), 404
 
         # Récupérer les lignes précédentes de la réception
-        if use_local:
+        if is_local:
             cur.execute("""
                 SELECT numero_item, qtea, nprix
                 FROM attache2
@@ -3404,14 +3722,14 @@ def modifier_reception(numero_mouvement):
         old_lines = cur.fetchall()
         old_lines_dict = {line['numero_item']: line for line in old_lines}
         old_total_cost = sum(float(line['qtea']) * float(line['nprix']) for line in old_lines)
-        logger.info(f"Coût total réception précédente: {old_total_cost}")
+        logger.debug(f"Coût total réception précédente: {old_total_cost}")
 
         # Restaurer le solde initial
-        current_solde = float(fournisseur['solde']) if fournisseur['solde'] else 0.0
+        current_solde = float(fournisseur['solde'] or '0.0')
         restored_solde = current_solde + old_total_cost
-        logger.info(f"Solde restauré: {restored_solde}")
+        logger.debug(f"Solde restauré: {restored_solde}")
 
-        # Calculer le nouveau coût total
+        # Calculer le nouveau coût total et préparer les mises à jour du stock
         new_total_cost = 0.0
         stock_updates = {}
 
@@ -3426,7 +3744,7 @@ def modifier_reception(numero_mouvement):
                 raise Exception("Le prix d'achat ne peut pas être négatif")
 
             # Vérifier l'article
-            if use_local:
+            if is_local:
                 cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s", (numero_item,))
             else:
                 cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", 
@@ -3437,6 +3755,7 @@ def modifier_reception(numero_mouvement):
                 raise Exception(f"Article {numero_item} non trouvé")
 
             current_qte = float(item['qte'] or 0)
+            current_prixba = float(item['prixba'] or 0)
             old_qtea = float(old_lines_dict.get(numero_item, {}).get('qtea', 0))
 
             new_total_cost += new_qtea * prixbh
@@ -3444,30 +3763,33 @@ def modifier_reception(numero_mouvement):
                 'old_qtea': old_qtea,
                 'new_qtea': new_qtea,
                 'prixbh': prixbh,
-                'current_qte': current_qte
+                'current_qte': current_qte,
+                'current_prixba': current_prixba
             }
 
         # Traiter les articles supprimés
         for numero_item, old_line in old_lines_dict.items():
             if numero_item not in stock_updates:
-                if use_local:
-                    cur.execute("SELECT qte FROM item WHERE numero_item = %s", (numero_item,))
+                if is_local:
+                    cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s", (numero_item,))
                 else:
-                    cur.execute("SELECT qte FROM item WHERE numero_item = %s AND user_id = %s", 
+                    cur.execute("SELECT qte, prixba FROM item WHERE numero_item = %s AND user_id = %s", 
                                (numero_item, user_id))
                     
+                item = cur.fetchone()
                 stock_updates[numero_item] = {
                     'old_qtea': float(old_line['qtea']),
                     'new_qtea': 0,
                     'prixbh': 0,
-                    'current_qte': float(cur.fetchone()['qte'] or 0)
+                    'current_qte': float(item['qte'] or 0),
+                    'current_prixba': float(item['prixba'] or 0)
                 }
 
         # Mettre à jour le solde du fournisseur
         new_solde = restored_solde - new_total_cost
         new_solde_str = f"{new_solde:.2f}"
         
-        if use_local:
+        if is_local:
             cur.execute("""
                 UPDATE fournisseur 
                 SET solde = %s 
@@ -3480,10 +3802,10 @@ def modifier_reception(numero_mouvement):
                 WHERE numero_fou = %s AND user_id = %s
             """, (new_solde_str, numero_four, user_id))
                 
-        logger.info(f"Solde fournisseur mis à jour: numero_fou={numero_four}, new_total_cost={new_total_cost}, new_solde={new_solde_str}")
+        logger.debug(f"Solde fournisseur mis à jour: numero_fou={numero_four}, new_total_cost={new_total_cost}, new_solde={new_solde_str}")
 
         # Supprimer les anciennes lignes
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s", (numero_mouvement,))
         else:
             cur.execute("DELETE FROM attache2 WHERE numero_mouvement = %s AND user_id = %s", 
@@ -3495,6 +3817,7 @@ def modifier_reception(numero_mouvement):
             new_qtea = update_info['new_qtea']
             prixbh = update_info['prixbh']
             current_qte = update_info['current_qte']
+            current_prixba = update_info['current_prixba']
 
             restored_qte = current_qte - old_qtea
             new_qte = restored_qte + new_qtea
@@ -3503,37 +3826,36 @@ def modifier_reception(numero_mouvement):
                 raise Exception(f"Stock négatif pour l'article {numero_item}: {new_qte}")
 
             if new_qtea > 0:
-                if use_local:
+                if is_local:
                     cur.execute("""
                         INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (numero_item, numero_mouvement, new_qtea, new_qte, str(prixbh)[:30], str(prixbh)[:30], True))
+                    """, (numero_item, numero_mouvement, new_qtea, new_qte, f"{prixbh:.2f}", f"{prixbh:.2f}", True))
                 else:
                     cur.execute("""
                         INSERT INTO attache2 (numero_item, numero_mouvement, qtea, nqte, nprix, pump, send, user_id)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (numero_item, numero_mouvement, new_qtea, new_qte, str(prixbh)[:30], str(prixbh)[:30], True, user_id))
+                    """, (numero_item, numero_mouvement, new_qtea, new_qte, f"{prixbh:.2f}", f"{prixbh:.2f}", True, user_id))
 
             # Mettre à jour le stock
-            if use_local:
+            new_prixba = prixbh if new_qtea > 0 else current_prixba
+            if is_local:
                 cur.execute("""
                     UPDATE item 
                     SET qte = %s, prixba = %s 
                     WHERE numero_item = %s
-                """, (new_qte, str(prixbh)[:30] if new_qtea > 0 else str(update_info.get('current_prixba', 0)), 
-                         numero_item))
+                """, (new_qte, f"{new_prixba:.2f}", numero_item))
             else:
                 cur.execute("""
                     UPDATE item 
                     SET qte = %s, prixba = %s 
                     WHERE numero_item = %s AND user_id = %s
-                """, (new_qte, str(prixbh)[:30] if new_qtea > 0 else str(update_info.get('current_prixba', 0)), 
-                         numero_item, user_id))
+                """, (new_qte, f"{new_prixba:.2f}", numero_item, user_id))
                 
-            logger.info(f"Stock mis à jour: numero_item={numero_item}, old_qtea={old_qtea}, new_qtea={new_qtea}, new_qte={new_qte}")
+            logger.debug(f"Stock mis à jour: numero_item={numero_item}, old_qtea={old_qtea}, new_qtea={new_qtea}, new_qte={new_qte}")
 
         # Mettre à jour le mouvement
-        if use_local:
+        if is_local:
             cur.execute("""
                 UPDATE mouvement 
                 SET numero_four = %s, numero_util = %s, date_m = %s
@@ -3548,66 +3870,82 @@ def modifier_reception(numero_mouvement):
 
         conn.commit()
         logger.info(f"Réception modifiée: numero_mouvement={numero_mouvement}, {len(lignes)} lignes")
-        return jsonify({"numero_mouvement": numero_mouvement}), 200
+        return jsonify({"numero_mouvement": numero_mouvement, "statut": "Réception modifiée"}), 200
 
     except Exception as e:
+        logger.error(f"Erreur dans modifier_reception: {str(e)}")
         if conn:
             conn.rollback()
-        logger.error(f"Erreur modification réception: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"erreur": str(e)}), 500
     finally:
         if conn:
             cur.close()
             conn.close()
+            logger.debug("Connexion fermée")
 
 # --- Catégories ---
+
 @app.route('/liste_categories', methods=['GET'])
 def liste_categories():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
+    conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération liste catégories pour user_id: {user_id}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        if use_local:
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute("SELECT numer_categorie, description_c FROM categorie ORDER BY description_c")
         else:
             cur.execute("SELECT numer_categorie, description_c FROM categorie WHERE user_id = %s ORDER BY description_c", 
                         (user_id,))
             
         categories = cur.fetchall()
-        cur.close()
-        conn.close()
+        logger.debug(f"Nombre de catégories trouvées: {len(categories)}")
         return jsonify(categories), 200
+
     except Exception as e:
+        logger.error(f"Erreur dans liste_categories: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
         if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur liste catégories: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
+            logger.debug("Connexion fermée")
 
 @app.route('/ajouter_categorie', methods=['POST'])
 def ajouter_categorie():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     description_c = data.get('description_c')
     if not description_c:
+        logger.error("Description de catégorie manquante")
         return jsonify({'erreur': 'Description requise'}), 400
 
+    conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Ajout catégorie pour user_id: {user_id}, description: {description_c}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
         cur = conn.cursor()
-        
-        if use_local:
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute(
                 "INSERT INTO categorie (description_c) VALUES (%s) RETURNING numer_categorie",
                 (description_c,)
@@ -3620,35 +3958,45 @@ def ajouter_categorie():
             
         category_id = cur.fetchone()[0]
         conn.commit()
-        cur.close()
-        conn.close()
+        logger.info(f"Catégorie ajoutée: numer_categorie={category_id}")
         return jsonify({'statut': 'Catégorie ajoutée', 'id': category_id}), 201
+
     except Exception as e:
+        logger.error(f"Erreur dans ajouter_categorie: {str(e)}")
         if conn:
             conn.rollback()
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur ajout catégorie: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
+            logger.debug("Connexion fermée")
 
-@app.route('/modifier_categorie/<int:numer_categorie>', methods=['PUT'])
+@app.route('/modifier_categorie/<numer_categorie>', methods=['PUT'])
 def modifier_categorie(numer_categorie):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
     data = request.get_json()
     description_c = data.get('description_c')
     if not description_c:
+        logger.error("Description de catégorie manquante")
         return jsonify({'erreur': 'Description requise'}), 400
 
+    conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Modification catégorie pour user_id: {user_id}, numer_categorie: {numer_categorie}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
         cur = conn.cursor()
-        
-        if use_local:
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
+        if is_local:
             cur.execute(
                 "UPDATE categorie SET description_c = %s WHERE numer_categorie = %s RETURNING numer_categorie",
                 (description_c, numer_categorie)
@@ -3660,110 +4008,124 @@ def modifier_categorie(numer_categorie):
             )
             
         if cur.rowcount == 0:
-            cur.close()
-            conn.close()
+            logger.error(f"Catégorie {numer_categorie} non trouvée")
             return jsonify({'erreur': 'Catégorie non trouvée'}), 404
             
         conn.commit()
-        cur.close()
-        conn.close()
+        logger.info(f"Catégorie modifiée: numer_categorie={numer_categorie}")
         return jsonify({'statut': 'Catégorie modifiée'}), 200
+
     except Exception as e:
+        logger.error(f"Erreur dans modifier_categorie: {str(e)}")
         if conn:
             conn.rollback()
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur modification catégorie: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
+            logger.debug("Connexion fermée")
 
-@app.route('/supprimer_categorie/<int:numer_categorie>', methods=['DELETE'])
+@app.route('/supprimer_categorie/<numer_categorie>', methods=['DELETE'])
 def supprimer_categorie(numer_categorie):
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
+    conn = None
     try:
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Suppression catégorie pour user_id: {user_id}, numer_categorie: {numer_categorie}")
+        conn = get_conn(user_id)
+        conn.autocommit = False
         cur = conn.cursor()
-        
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier si la catégorie est utilisée
-        if use_local:
+        if is_local:
             cur.execute("SELECT 1 FROM item WHERE numero_categorie = %s", (numer_categorie,))
         else:
             cur.execute("SELECT 1 FROM item WHERE numero_categorie = %s AND user_id = %s", 
                         (numer_categorie, user_id))
             
         if cur.fetchone():
-            cur.close()
-            conn.close()
+            logger.error(f"Catégorie {numer_categorie} utilisée par des produits")
             return jsonify({'erreur': 'Catégorie utilisée par des produits'}), 400
 
-        if use_local:
+        if is_local:
             cur.execute("DELETE FROM categorie WHERE numer_categorie = %s", (numer_categorie,))
         else:
             cur.execute("DELETE FROM categorie WHERE numer_categorie = %s AND user_id = %s", 
                        (numer_categorie, user_id))
             
         if cur.rowcount == 0:
-            cur.close()
-            conn.close()
+            logger.error(f"Catégorie {numer_categorie} non trouvée")
             return jsonify({'erreur': 'Catégorie non trouvée'}), 404
             
         conn.commit()
-        cur.close()
-        conn.close()
+        logger.info(f"Catégorie supprimée: numer_categorie={numer_categorie}")
         return jsonify({'statut': 'Catégorie supprimée'}), 200
+
     except Exception as e:
+        logger.error(f"Erreur dans supprimer_categorie: {str(e)}")
         if conn:
             conn.rollback()
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
             cur.close()
             conn.close()
-        logger.error(f"Erreur suppression catégorie: {str(e)}")
-        return jsonify({'erreur': str(e)}), 500
+            logger.debug("Connexion fermée")
 
 @app.route('/assigner_categorie', methods=['POST'])
 def assigner_categorie():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
+
+    data = request.get_json()
+    if not data:
+        logger.error("Données JSON manquantes")
+        return jsonify({'erreur': 'Données JSON requises'}), 400
+
+    numero_item = data.get('numero_item')
+    numero_categorie = data.get('numer_categorie')
+
+    logger.debug(f"Assignation catégorie pour user_id: {user_id}, numero_item: {numero_item}, numer_categorie: {numero_categorie}")
+
+    if numero_item is None:
+        logger.error("numero_item manquant")
+        return jsonify({'erreur': 'Numéro d\'article requis'}), 400
 
     try:
-        data = request.get_json()
-        if not data:
-            logger.error("Données JSON manquantes")
-            return jsonify({'erreur': 'Données JSON requises'}), 400
+        numero_item = int(numero_item)
+    except (ValueError, TypeError) as e:
+        logger.error(f"numero_item invalide: {str(e)}")
+        return jsonify({'erreur': 'Numéro d\'article doit être un entier'}), 400
 
-        numero_item = data.get('numero_item')
-        numero_categorie = data.get('numer_categorie')
-
-        logger.debug(f"Requête reçue: numero_item={numero_item}, numer_categorie={numero_categorie}, user_id={user_id}")
-
-        if numero_item is None:
-            logger.error("numero_item manquant")
-            return jsonify({'erreur': 'Numéro d\'article requis'}), 400
-
+    if numero_categorie is not None:
         try:
-            numero_item = int(numero_item)
+            numero_categorie = int(numero_categorie)
         except (ValueError, TypeError) as e:
-            logger.error(f"numero_item invalide: {str(e)}")
-            return jsonify({'erreur': 'Numéro d\'article doit être un entier'}), 400
+            logger.error(f"numero_categorie invalide: {str(e)}")
+            return jsonify({'erreur': 'Numéro de catégorie doit être un entier'}), 400
 
-        if numero_categorie is not None:
-            try:
-                numero_categorie = int(numero_categorie)
-            except (ValueError, TypeError) as e:
-                logger.error(f"numero_categorie invalide: {str(e)}")
-                return jsonify({'erreur': 'Numéro de catégorie doit être un entier'}), 400
-
-        conn = get_conn(user_id, use_local)
+    conn = None
+    try:
+        conn = get_conn(user_id)
+        conn.autocommit = False
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         # Vérifier l'article
-        if use_local:
+        if is_local:
             cur.execute("SELECT numero_item, designation FROM item WHERE numero_item = %s", (numero_item,))
         else:
             cur.execute("SELECT numero_item, designation FROM item WHERE numero_item = %s AND user_id = %s", 
@@ -3772,13 +4134,11 @@ def assigner_categorie():
         item = cur.fetchone()
         if not item:
             logger.error(f"Article {numero_item} non trouvé")
-            cur.close()
-            conn.close()
             return jsonify({'erreur': f'Article {numero_item} non trouvé'}), 404
 
         # Vérifier la catégorie si spécifiée
         if numero_categorie is not None:
-            if use_local:
+            if is_local:
                 cur.execute("SELECT numer_categorie, description_c FROM categorie WHERE numer_categorie = %s", 
                            (numero_categorie,))
             else:
@@ -3788,12 +4148,10 @@ def assigner_categorie():
             category = cur.fetchone()
             if not category:
                 logger.error(f"Catégorie {numero_categorie} non trouvée")
-                cur.close()
-                conn.close()
                 return jsonify({'erreur': f'Catégorie {numero_categorie} non trouvée'}), 404
 
         # Mettre à jour la catégorie de l'article
-        if use_local:
+        if is_local:
             cur.execute("""
                 UPDATE item 
                 SET numero_categorie = %s 
@@ -3810,13 +4168,10 @@ def assigner_categorie():
             
         if cur.rowcount == 0:
             logger.error("Aucun article mis à jour")
-            cur.close()
-            conn.close()
             return jsonify({'erreur': 'Aucun article mis à jour'}), 404
 
         conn.commit()
-        cur.close()
-        conn.close()
+        logger.info(f"Catégorie assignée: numero_item={numero_item}, numer_categorie={numero_categorie}")
         return jsonify({
             'statut': 'Catégorie assignée',
             'numero_item': numero_item,
@@ -3824,41 +4179,48 @@ def assigner_categorie():
         }), 200
 
     except Exception as e:
-        logger.error(f"Erreur assignation catégorie: {str(e)}", exc_info=True)
-        if 'conn' in locals() and conn:
+        logger.error(f"Erreur dans assigner_categorie: {str(e)}")
+        if conn:
             conn.rollback()
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
             cur.close()
             conn.close()
-        return jsonify({'erreur': f'Erreur serveur: {str(e)}'}), 500
+            logger.debug("Connexion fermée")
 
 @app.route('/liste_produits_par_categorie', methods=['GET'])
 def liste_produits_par_categorie():
-    validation_result = validate_user_and_mode()
-    if isinstance(validation_result, tuple) and len(validation_result) == 2:
-        user_id, use_local = validation_result
-    else:
-        return validation_result
+    user_id = validate_user()
+    if isinstance(user_id, tuple):
+        return user_id
 
+    numero_categorie = request.args.get('numero_categorie', type=int)
+    conn = None
     try:
-        numero_categorie = request.args.get('numero_categorie', type=int)
-        conn = get_conn(user_id, use_local)
+        logger.debug(f"Récupération produits par catégorie pour user_id: {user_id}, numero_categorie: {numero_categorie}")
+        conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
+
+        # Check if connection is local
+        config = get_local_db_config(user_id)
+        is_local = config and config['local_db_host']
+        logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
+
         if numero_categorie is None and 'numero_categorie' in request.args:
             # Produits sans catégorie
-            if use_local:
+            if is_local:
                 cur.execute("SELECT numero_item, designation FROM item WHERE numero_categorie IS NULL")
             else:
                 cur.execute("SELECT numero_item, designation FROM item WHERE numero_categorie IS NULL AND user_id = %s", 
-                          (user_id,))
+                           (user_id,))
                 
             produits = cur.fetchall()
-            cur.close()
-            conn.close()
+            logger.debug(f"Nombre de produits sans catégorie trouvés: {len(produits)}")
             return jsonify({'produits': produits}), 200
         else:
             # Produits par catégorie
-            if use_local:
+            if is_local:
                 cur.execute("""
                     SELECT c.numer_categorie, c.description_c, i.numero_item, i.designation
                     FROM categorie c
@@ -3874,6 +4236,7 @@ def liste_produits_par_categorie():
                 """, (user_id, user_id, numero_categorie, numero_categorie))
                 
             rows = cur.fetchall()
+            logger.debug(f"Nombre de lignes trouvées: {len(rows)}")
             categories = {}
             for row in rows:
                 cat_id = row['numer_categorie']
@@ -3889,15 +4252,17 @@ def liste_produits_par_categorie():
                         'designation': row['designation']
                     })
             
-            cur.close()
-            conn.close()
             return jsonify({'categories': list(categories.values())}), 200
+
     except Exception as e:
-        logger.error(f"Erreur liste produits par catégorie: {str(e)}", exc_info=True)
-        if 'conn' in locals() and conn:
+        logger.error(f"Erreur dans liste_produits_par_categorie: {str(e)}")
+        return jsonify({'erreur': str(e)}), 500
+    finally:
+        if conn:
             cur.close()
             conn.close()
-        return jsonify({'erreur': str(e)}), 500
+            logger.debug("Connexion fermée")
 # Lancer l'application
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))		
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))					
+			
