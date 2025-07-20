@@ -1717,6 +1717,7 @@ def profit_by_date():
             conn.close()
             logger.debug("Connexion fermée")
 
+
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     user_id = validate_user()
@@ -1730,12 +1731,12 @@ def dashboard():
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Check if connection is local
+        # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
-        # Define date range
+        # Define the date range
         if period == 'week':
             date_end = datetime.now().replace(hour=23, minute=59, second=59, microsecond=999999)
             date_start = (datetime.now() - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1846,13 +1847,13 @@ def dashboard():
             current_date += timedelta(days=1)
 
         response = {
-            'total_ca': f"{float(kpi_data['total_ca'] or 0):.2f}",
-            'total_profit': f"{float(kpi_data['total_profit'] or 0):.2f}",
+            'total_ca': float(kpi_data['total_ca'] or 0),
+            'total_profit': float(kpi_data['total_profit'] or 0),
             'sales_count': int(kpi_data['sales_count'] or 0),
             'low_stock_items': int(low_stock_count or 0),
             'top_client': {
                 'name': top_client['nom'] if top_client else 'N/A',
-                'ca': f"{float(top_client['client_ca'] or 0):.2f}" if top_client else '0.00'
+                'ca': float(top_client['client_ca'] or 0) if top_client else 0
             },
             'chart_data': {
                 'labels': chart_labels,
