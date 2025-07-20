@@ -2089,10 +2089,13 @@ def supprimer_utilisateur(numero_util):
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+
+
 @app.route('/stock_value', methods=['GET'])
 def valeur_stock():
     user_id = validate_user()
     if isinstance(user_id, tuple):
+        logger.error(f"Erreur validation utilisateur: {user_id}")
         return user_id
 
     conn = None
@@ -2101,23 +2104,25 @@ def valeur_stock():
         conn = get_conn(user_id)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Check if connection is local
+        # Vérifier si la connexion est locale
         config = get_local_db_config(user_id)
         is_local = config and config['local_db_host']
         logger.debug(f"Connexion {'locale' if is_local else 'Supabase'} pour user_id: {user_id}")
 
         if is_local:
+            logger.debug("Exécution de la requête SQL pour la base locale")
             cur.execute("""
                 SELECT 
-                    SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
-                    SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
+                    SUM(COALESCE(CAST(NULLIF(REPLACE(prixba, ',', '.'), '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
+                    SUM(COALESCE(CAST(NULLIF(REPLACE(prix, ',', '.'), '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
                 FROM item
             """)
         else:
+            logger.debug(f"Exécution de la requête SQL pour Supabase avec user_id: {user_id}")
             cur.execute("""
                 SELECT 
-                    SUM(COALESCE(CAST(NULLIF(prixba, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
-                    SUM(COALESCE(CAST(NULLIF(prix, '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
+                    SUM(COALESCE(CAST(NULLIF(REPLACE(prixba, ',', '.'), '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_achat,
+                    SUM(COALESCE(CAST(NULLIF(REPLACE(prix, ',', '.'), '') AS FLOAT), 0) * COALESCE(qte, 0)) AS valeur_vente
                 FROM item 
                 WHERE user_id = %s
             """, (user_id,))
@@ -2125,10 +2130,10 @@ def valeur_stock():
         result = cur.fetchone()
         logger.debug(f"Résultat de la requête stock: {result}")
 
-        # Handle case where result is None
+        # Gérer le cas où result est None
         valeur_achat = float(result['valeur_achat'] or 0)
         valeur_vente = float(result['valeur_vente'] or 0)
-        zakat = valeur_vente * 0.025  # 2.5% of sales value
+        zakat = valeur_vente * 0.025  # 2.5% de la valeur de vente
 
         response = {
             'valeur_achat': f"{valeur_achat:.2f}",
@@ -2137,8 +2142,9 @@ def valeur_stock():
         }
         logger.debug(f"Réponse valeur_stock: {response}")
         return jsonify(response), 200
+
     except Exception as e:
-        logger.error(f"Erreur dans valeur_stock: {str(e)}")
+        logger.error(f"Erreur dans valeur_stock: {str(e)}", exc_info=True)
         return jsonify({'erreur': str(e)}), 500
     finally:
         if conn:
