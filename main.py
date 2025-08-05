@@ -386,9 +386,9 @@ def supprimer_client(numero_clt):
 
 @app.route('/liste_fournisseurs', methods=['GET'])
 def liste_fournisseurs():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({'erreur': 'user_id est requis'}), 400
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
         conn = get_conn()
@@ -502,9 +502,9 @@ def supprimer_fournisseur(numero_fou):
 
 @app.route('/liste_produits', methods=['GET'])
 def liste_produits():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({'erreur': 'user_id est requis'}), 400
+   user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
         conn = get_conn()
@@ -848,9 +848,9 @@ def valider_vente():
 
 @app.route('/client_solde', methods=['GET'])
 def client_solde():
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({'erreur': 'user_id est requis'}), 400
+   user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
         conn = get_conn()
@@ -1141,9 +1141,9 @@ def profit_by_date():
 @app.route('/dashboard', methods=['GET'])
 def dashboard():
     period = request.args.get('period', 'day')
-    user_id = request.args.get('user_id')
-    if not user_id:
-        return jsonify({'erreur': 'user_id est requis'}), 400
+    user_id = validate_user_id()
+    if isinstance(user_id, tuple):
+        return user_id
 
     try:
         conn = get_conn()
