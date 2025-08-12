@@ -40,6 +40,64 @@ def index():
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
 
+@app.route('/valider_vendeur', methods=['POST'])
+def valider_vendeur():
+    """
+    Endpoint pour valider un vendeur en vérifiant son nom et son mot de passe.
+    Reçoit un JSON avec 'nom' et 'password2'.
+    Retourne les informations du vendeur si valide, sinon une erreur.
+    """
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        logger.error(f"Échec validation user_id: {user_id[0].get('erreur')}")
+        return user_id  # Retourne l'erreur 401 si user_id invalide
+
+    data = request.get_json()
+    if not data or 'nom' not in data or 'password2' not in data:
+        logger.error("Données invalides: 'nom' ou 'password2' manquant")
+        return jsonify({"erreur": "Le nom et le mot de passe sont requis"}), 400
+
+    nom = data.get('nom')
+    password2 = data.get('password2')
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Requête pour vérifier l'utilisateur
+        cur.execute("""
+            SELECT numero_util, nom, statue 
+            FROM utilisateur 
+            WHERE nom = %s AND password2 = %s AND user_id = %s
+        """, (nom, password2, user_id))
+        
+        utilisateur = cur.fetchone()
+        
+        cur.close()
+        conn.close()
+
+        if not utilisateur:
+            logger.error(f"Échec authentification: nom={nom}, user_id={user_id}")
+            return jsonify({"erreur": "Nom ou mot de passe incorrect"}), 401
+
+        logger.info(f"Vendeur validé: numero_util={utilisateur['numero_util']}, nom={nom}")
+        return jsonify({
+            "statut": "Vendeur validé",
+            "utilisateur": {
+                "numero_util": utilisateur['numero_util'],
+                "nom": utilisateur['nom'],
+                "statut": utilisateur['statue']
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Erreur lors de la validation du vendeur: {str(e)}", exc_info=True)
+        if 'conn' in locals() and conn:
+            cur.close()
+            conn.close()
+        return jsonify({"erreur": str(e)}), 500
+
+
 @app.route('/rechercher_produit_codebar', methods=['GET'])
 def rechercher_produit_codebar():
     user_id = validate_user_id()
