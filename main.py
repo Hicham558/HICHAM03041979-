@@ -45,6 +45,8 @@ def index():
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
 
+# Configurer le logging pour capturer plus de détails
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 @contextmanager
 def temp_sqlite_db():
@@ -63,48 +65,52 @@ def temp_sqlite_db():
 
 def get_table_structure_info(pg_cur, table_name):
     """Get detailed structure info including identity columns"""
-    pg_cur.execute("""
-        SELECT 
-            column_name, 
-            data_type, 
-            column_default, 
-            is_nullable,
-            character_maximum_length, 
-            numeric_precision, 
-            numeric_scale,
-            is_identity,
-            identity_generation
-        FROM information_schema.columns 
-        WHERE table_schema = 'public' AND table_name = %s
-        ORDER BY ordinal_position
-    """, (table_name,))
-    
-    columns = pg_cur.fetchall()
-    
-    pg_cur.execute("""
-        SELECT column_name
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu 
-            ON tc.constraint_name = kcu.constraint_name
-            AND tc.table_schema = kcu.table_schema
-        WHERE tc.table_schema = 'public' 
-        AND tc.table_name = %s
-        AND tc.constraint_type = 'PRIMARY KEY'
-        ORDER BY kcu.ordinal_position
-    """, (table_name,))
-    
-    primary_keys = [row['column_name'] for row in pg_cur.fetchall()]
-    
-    identity_columns = []
-    for col in columns:
-        if (col['is_identity'] == 'YES' or 
-            ('nextval(' in str(col['column_default']).lower() and 
-             '_seq' in str(col['column_default']).lower())):
-            identity_columns.append(col['column_name'])
-    
-    has_user_id = any(col['column_name'].lower() == 'numero_util' for col in columns)
-    
-    return columns, primary_keys, identity_columns, has_user_id
+    try:
+        pg_cur.execute("""
+            SELECT 
+                column_name, 
+                data_type, 
+                column_default, 
+                is_nullable,
+                character_maximum_length, 
+                numeric_precision, 
+                numeric_scale,
+                is_identity,
+                identity_generation
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' AND table_name = %s
+            ORDER BY ordinal_position
+        """, (table_name,))
+        
+        columns = pg_cur.fetchall()
+        
+        pg_cur.execute("""
+            SELECT column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu 
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            WHERE tc.table_schema = 'public' 
+            AND tc.table_name = %s
+            AND tc.constraint_type = 'PRIMARY KEY'
+            ORDER BY kcu.ordinal_position
+        """, (table_name,))
+        
+        primary_keys = [row['column_name'] for row in pg_cur.fetchall()]
+        
+        identity_columns = []
+        for col in columns:
+            if (col['is_identity'] == 'YES' or 
+                ('nextval(' in str(col['column_default']).lower() and 
+                 '_seq' in str(col['column_default']).lower())):
+                identity_columns.append(col['column_name'])
+        
+        has_user_id = any(col['column_name'].lower() == 'numero_util' for col in columns)
+        
+        return columns, primary_keys, identity_columns, has_user_id
+    except Exception as e:
+        logging.error(f"Erreur lors de la récupération de la structure de la table {table_name}: {str(e)}")
+        raise
 
 def map_postgres_to_sqlite_type_v2(pg_type, column_default, column_name, char_max_length, is_identity, is_pk):
     """Enhanced mapping with explicit identity detection"""
@@ -151,128 +157,132 @@ def map_postgres_to_sqlite_type_v2(pg_type, column_default, column_name, char_ma
         elif 'false' in default_str:
             default_clause = "DEFAULT 0"
         elif not ('nextval(' in default_str or 'identity' in default_str):
-            clean_default = column_default.replace('::text', '').replace("'", "''")
+            clean_default = str(column_default).replace('::text', '').replace('::character varying', '').replace("'", "''")
             default_clause = f"DEFAULT '{clean_default}'"
     
     return sqlite_type, default_clause
 
 def export_table(pg_cur, sqlite_cur, table_name, user_id):
     """Export a single table from PostgreSQL to SQLite with user_id filtering where applicable"""
-    
-    columns, primary_keys, identity_columns, has_user_id = get_table_structure_info(pg_cur, table_name)
-    
-    if not columns:
-        logging.warning(f"Aucune colonne trouvée pour la table {table_name}")
-        return
-    
-    logging.info(f"Table {table_name}: PK={primary_keys}, Identity={identity_columns}, has_user_id={has_user_id}")
-    
-    col_defs = []
-    column_info = []
-    
-    for col in columns:
-        col_name = col['column_name']
-        is_identity = col_name in identity_columns
-        is_pk = col_name in primary_keys
-        
-        sqlite_type, default_clause = map_postgres_to_sqlite_type_v2(
-            col['data_type'], 
-            col['column_default'],
-            col_name,
-            col['character_maximum_length'],
-            is_identity,
-            is_pk
-        )
-        
-        col_def = f'{col_name.upper()} {sqlite_type}'
-        
-        if not is_identity and not is_pk:
-            if (col['is_nullable'] == 'NO' and 
-                col['column_default'] is not None and 
-                not ('nextval(' in str(col['column_default']).lower())):
-                col_def += " NOT NULL"
-            
-            if default_clause:
-                col_def += f" {default_clause}"
-        
-        col_defs.append(col_def)
-        column_info.append({
-            'name': col_name,
-            'type': col['data_type'],
-            'default': col['column_default'],
-            'nullable': col['is_nullable'],
-            'is_identity': is_identity
-        })
-    
-    table_name_upper = table_name.upper()
-    if table_name_upper in ['TABLES', 'ORDER', 'GROUP', 'INDEX', 'SELECT', 'INSERT', 'UPDATE', 'DELETE']:
-        table_name_quoted = f'"{table_name_upper}"'
-    else:
-        table_name_quoted = table_name_upper
-    
-    create_sql = f'CREATE TABLE {table_name_quoted} ({", ".join(col_defs)})'
-    
     try:
-        sqlite_cur.execute(create_sql)
-        logging.info(f"Tableau créé : {table_name_upper}")
-    except Exception as e:
-        logging.error(f"Erreur lors de la création de la table {table_name}: {str(e)}")
-        raise
-    
-    batch_size = 1000
-    offset = 0
-    total_rows = 0
-    
-    while True:
-        if has_user_id:
-            query = f'SELECT * FROM "{table_name}" WHERE numero_util = %s LIMIT %s OFFSET %s'
-            pg_cur.execute(query, (user_id, batch_size, offset))
-        else:
-            query = f'SELECT * FROM "{table_name}" LIMIT %s OFFSET %s'
-            pg_cur.execute(query, (batch_size, offset))
+        columns, primary_keys, identity_columns, has_user_id = get_table_structure_info(pg_cur, table_name)
         
-        rows = pg_cur.fetchall()
+        if not columns:
+            logging.warning(f"Aucune colonne trouvée pour la table {table_name}")
+            return
         
-        if not rows:
-            break
+        logging.info(f"Table {table_name}: PK={primary_keys}, Identity={identity_columns}, has_user_id={has_user_id}")
         
-        processed_rows = []
-        for row in rows:
-            processed_row = []
-            for col_info in column_info:
-                col_name = col_info['name']
-                value = row[col_name]
-                
-                if value is None:
-                    if col_info['default'] and not col_info['is_identity']:
-                        default_str = str(col_info['default']).lower()
-                        if 'true' in default_str:
-                            value = 1
-                        elif 'false' in default_str:
-                            value = 0
-                elif isinstance(value, bool):
-                    value = 1 if value else 0
-                elif isinstance(value, (date, datetime, time)):
-                    value = value.isoformat()
-                
-                processed_row.append(value)
+        col_defs = []
+        column_info = []
+        
+        for col in columns:
+            col_name = col['column_name']
+            is_identity = col_name in identity_columns
+            is_pk = col_name in primary_keys
             
-            processed_rows.append(tuple(processed_row))
-        
-        placeholders = ",".join(["?"] * len(column_info))
-        try:
-            sqlite_cur.executemany(
-                f'INSERT INTO {table_name_quoted} VALUES ({placeholders})',
-                processed_rows
+            sqlite_type, default_clause = map_postgres_to_sqlite_type_v2(
+                col['data_type'], 
+                col['column_default'],
+                col_name,
+                col['character_maximum_length'],
+                is_identity,
+                is_pk
             )
-            total_rows += len(processed_rows)
+            
+            col_def = f'{col_name.upper()} {sqlite_type}'
+            
+            if not is_identity and not is_pk:
+                if col['is_nullable'] == 'NO' and col['column_default'] is None:
+                    col_def += " NOT NULL"
+                
+                if default_clause:
+                    col_def += f" {default_clause}"
+            
+            col_defs.append(col_def)
+            column_info.append({
+                'name': col_name,
+                'type': col['data_type'],
+                'default': col['column_default'],
+                'nullable': col['is_nullable'],
+                'is_identity': is_identity
+            })
+        
+        table_name_upper = table_name.upper()
+        if table_name_upper in ['TABLES', 'ORDER', 'GROUP', 'INDEX', 'SELECT', 'INSERT', 'UPDATE', 'DELETE']:
+            table_name_quoted = f'"{table_name_upper}"'
+        else:
+            table_name_quoted = table_name_upper
+        
+        create_sql = f'CREATE TABLE {table_name_quoted} ({", ".join(col_defs)})'
+        
+        try:
+            sqlite_cur.execute(create_sql)
+            logging.info(f"Tableau créé : {table_name_upper}")
+            logging.debug(f"SQL de création : {create_sql}")
         except Exception as e:
-            logging.error(f"Erreur lors de l'insertion des données dans {table_name}: {str(e)}")
+            logging.error(f"Erreur lors de la création de la table {table_name}: {str(e)}")
             raise
         
-        offset += batch_size
+        batch_size = 1000
+        offset = 0
+        total_rows = 0
+        
+        while True:
+            if has_user_id:
+                query = f'SELECT * FROM "{table_name}" WHERE numero_util = %s LIMIT %s OFFSET %s'
+                pg_cur.execute(query, (user_id, batch_size, offset))
+            else:
+                query = f'SELECT * FROM "{table_name}" LIMIT %s OFFSET %s'
+                pg_cur.execute(query, (batch_size, offset))
+            
+            rows = pg_cur.fetchall()
+            
+            if not rows:
+                break
+            
+            processed_rows = []
+            for row in rows:
+                processed_row = []
+                for col_info in column_info:
+                    col_name = col_info['name']
+                    value = row[col_name]
+                    
+                    if value is None:
+                        if col_info['default'] and not col_info['is_identity']:
+                            default_str = str(col_info['default']).lower()
+                            if 'true' in default_str:
+                                value = 1
+                            elif 'false' in default_str:
+                                value = 0
+                    elif isinstance(value, bool):
+                        value = 1 if value else 0
+                    elif isinstance(value, (date, datetime, time)):
+                        value = value.isoformat()
+                    
+                    processed_row.append(value)
+                
+                processed_rows.append(tuple(processed_row))
+            
+            placeholders = ",".join(["?"] * len(column_info))
+            try:
+                sqlite_cur.executemany(
+                    f'INSERT INTO {table_name_quoted} VALUES ({placeholders})',
+                    processed_rows
+                )
+                total_rows += len(processed_rows)
+            except Exception as e:
+                logging.error(f"Erreur lors de l'insertion des données dans {table_name}: {str(e)}")
+                logging.debug(f"Exemple de ligne : {processed_rows[0] if processed_rows else 'Aucune ligne'}")
+                raise
+            
+            offset += batch_size
+        
+        logging.info(f"{total_rows} lignes exportées avec succès depuis la table {table_name_upper}")
     
-    logging.info(f"{total_rows} lignes exportées avec succès depuis la table {table_name_upper}")
+    except Exception as e:
+        logging.error(f"Erreur générale lors de l'exportation de la table {table_name}: {str(e)}")
+        raise
 
 @app.route('/export', methods=['GET'])
 def export_db():
@@ -290,6 +300,14 @@ def export_db():
             sqlite_cur = sqlite_conn.cursor()
             sqlite_cur.execute("PRAGMA foreign_keys = ON")
             
+            # Liste des tables attendues, en supprimant les doublons
+            expected_tables = [
+                'categorie', 'salle', 'tables', 'utilisateur', 'fournisseur', 'comande',
+                'item', 'attache', 'mouvement', 'attache2', 'attachetmp', 'client',
+                'cloture', 'codebar', 'encaisse', 'item_composition', 'mouvementc',
+                'observation', 'tmp', 'tva'
+            ]
+            
             pg_cur.execute("""
                 SELECT table_name 
                 FROM information_schema.tables 
@@ -300,11 +318,19 @@ def export_db():
             
             tables = [row['table_name'] for row in pg_cur.fetchall()]
             
+            # Vérifier que toutes les tables attendues existent
+            missing_tables = [t for t in expected_tables if t.lower() not in [x.lower() for x in tables]]
+            if missing_tables:
+                logging.warning(f"Tables manquantes dans PostgreSQL : {missing_tables}")
+            
             if not tables:
                 return jsonify({'message': 'Aucune table trouvée pour l\'exportation'}), 200
             
             exported_tables = []
-            for table in tables:
+            for table in expected_tables:
+                if table.lower() not in [t.lower() for t in tables]:
+                    logging.warning(f"Table {table} non trouvée dans PostgreSQL, sautée")
+                    continue
                 try:
                     export_table(pg_cur, sqlite_cur, table, user_id)
                     exported_tables.append(table)
@@ -313,6 +339,16 @@ def export_db():
                     continue
             
             sqlite_conn.commit()
+            
+            # Vérifier les tables créées dans SQLite
+            sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            created_tables = [row[0].lower() for row in sqlite_cur.fetchall()]
+            logging.info(f"Tables créées dans SQLite : {created_tables}")
+            
+            # Vérifier les tables manquantes
+            missing_created_tables = [t for t in expected_tables if t.lower() not in created_tables]
+            if missing_created_tables:
+                logging.warning(f"Tables non créées dans SQLite : {missing_created_tables}")
             
             with open(sqlite_path, "rb") as f:
                 file_size = os.path.getsize(sqlite_path)
@@ -329,6 +365,8 @@ def export_db():
                 "db": b64_db,
                 "tables_exported": exported_tables,
                 "total_tables": len(exported_tables),
+                "expected_tables": expected_tables,
+                "missing_tables": missing_tables,
                 "size_bytes": file_size
             })
             
@@ -343,6 +381,7 @@ def export_db():
     finally:
         if pg_conn:
             pg_conn.close()
+
 @app.route('/valider_vendeur', methods=['POST'])
 def valider_vendeur():
     """
