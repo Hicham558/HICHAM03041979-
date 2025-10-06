@@ -304,9 +304,11 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
 @app.route('/export', methods=['GET'])
 def export_db():
     """Export PostgreSQL database to SQLite and return as base64"""
-    # Contournement temporaire de l'authentification
-    user_id = "test_user_123"  # Remplacez par un user_id valide existant dans votre base
-    
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        logging.error("Aucun en-tête X-User-ID fourni")
+        return jsonify({'error': 'Missing X-User-ID header'}), 401
+
     pg_conn = None
     
     try:
@@ -317,7 +319,6 @@ def export_db():
             sqlite_cur = sqlite_conn.cursor()
             sqlite_cur.execute("PRAGMA foreign_keys = ON")
             
-            # Liste des tables attendues (20 tables uniques)
             expected_tables = [
                 'categorie', 'salle', 'tables', 'utilisateur', 'fournisseur', 'comande',
                 'item', 'attache', 'mouvement', 'attache2', 'attachetmp', 'client',
@@ -354,10 +355,16 @@ def export_db():
             
             sqlite_conn.commit()
             
-            # Vérifier les tables créées dans SQLite
             sqlite_cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
             created_tables = [row[0].lower() for row in sqlite_cur.fetchall()]
             logging.info(f"Tables créées dans SQLite : {created_tables}")
+            
+            table_contents = {}
+            for table in created_tables:
+                sqlite_cur.execute(f"SELECT COUNT(*) FROM {table}")
+                row_count = sqlite_cur.fetchone()[0]
+                table_contents[table] = row_count
+                logging.info(f"Table {table} dans SQLite contient {row_count} lignes")
             
             missing_created_tables = [t for t in expected_tables if t.lower() not in created_tables]
             if missing_created_tables:
@@ -365,7 +372,6 @@ def export_db():
             
             with open(sqlite_path, "rb") as f:
                 file_size = os.path.getsize(sqlite_path)
-                
                 max_size = 37 * 1024 * 1024
                 if file_size > max_size:
                     return jsonify({
@@ -381,6 +387,7 @@ def export_db():
                 "expected_tables": expected_tables,
                 "missing_tables": missing_tables,
                 "created_tables": created_tables,
+                "table_contents": table_contents,
                 "size_bytes": file_size
             })
             
