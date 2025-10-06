@@ -44,6 +44,7 @@ def index():
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
+
 @contextmanager
 def temp_sqlite_db():
     """Context manager for temporary SQLite database"""
@@ -100,19 +101,26 @@ def get_table_structure_info(pg_cur, table_name):
              '_seq' in str(col['column_default']).lower())):
             identity_columns.append(col['column_name'])
     
-    return columns, primary_keys, identity_columns
+    # Check if table has user_id (NUMERO_UTIL) column
+    has_user_id = any(col['column_name'].lower() == 'numero_util' for col in columns)
+    
+    return columns, primary_keys, identity_columns, has_user_id
 
-def map_postgres_to_sqlite_type(pg_type, column_default, column_name, char_max_length, is_identity, is_pk):
+def map_postgres_to_sqlite_type_v2(pg_type, column_default, column_name, char_max_length, is_identity, is_pk):
     """Enhanced mapping with explicit identity detection"""
     pg_type = pg_type.lower()
     
     if is_identity:
         return "INTEGER PRIMARY KEY AUTOINCREMENT", None
     
-    if pg_type in ['smallint', 'integer', 'int', 'int2', 'int4', 'bigint', 'int8']:
+    if pg_type in ['smallint', 'integer', 'int', 'int2', 'int4']:
         sqlite_type = "INTEGER"
-    elif pg_type in ['decimal', 'numeric', 'real', 'float4', 'float8', 'double precision']:
+    elif pg_type in ['bigint', 'int8']:
+        sqlite_type = "INTEGER"
+    elif pg_type in ['decimal', 'numeric', 'real', 'float4', 'float8']:
         sqlite_type = "REAL"
+    elif pg_type == 'double precision':
+        sqlite_type = "DOUBLE PRECISION"
     elif pg_type == 'boolean':
         sqlite_type = "INTEGER"
     elif pg_type in ['date', 'timestamp', 'timestamptz', 'time', 'timetz']:
@@ -149,15 +157,13 @@ def map_postgres_to_sqlite_type(pg_type, column_default, column_name, char_max_l
     return sqlite_type, default_clause
 
 def export_table(pg_cur, sqlite_cur, table_name, user_id):
-    """Export a single table from PostgreSQL to SQLite with user_id filtering"""
+    """Export a single table from PostgreSQL to SQLite with user_id filtering where applicable"""
     
-    columns, primary_keys, identity_columns = get_table_structure_info(pg_cur, table_name)
+    columns, primary_keys, identity_columns, has_user_id = get_table_structure_info(pg_cur, table_name)
     
     if not columns:
         logging.warning(f"No columns found for table {table_name}")
         return
-    
-    has_user_id = any(col['column_name'] == 'user_id' for col in columns)
     
     logging.info(f"Table {table_name}: PK={primary_keys}, Identity={identity_columns}, has_user_id={has_user_id}")
     
@@ -169,7 +175,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
         is_identity = col_name in identity_columns
         is_pk = col_name in primary_keys
         
-        sqlite_type, default_clause = map_postgres_to_sqlite_type(
+        sqlite_type, default_clause = map_postgres_to_sqlite_type_v2(
             col['data_type'], 
             col['column_default'],
             col_name,
@@ -219,7 +225,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
     
     while True:
         if has_user_id:
-            query = f'SELECT * FROM "{table_name}" WHERE user_id = %s LIMIT %s OFFSET %s'
+            query = f'SELECT * FROM "{table_name}" WHERE numero_util = %s LIMIT %s OFFSET %s'
             pg_cur.execute(query, (user_id, batch_size, offset))
         else:
             query = f'SELECT * FROM "{table_name}" LIMIT %s OFFSET %s'
@@ -246,7 +252,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
                             value = 0
                 elif isinstance(value, bool):
                     value = 1 if value else 0
-                elif isinstance(value, (date, datetime, time)):
+                elif isinstance(value, (datetime.date, datetime.datetime, datetime.time)):
                     value = value.isoformat()
                 
                 processed_row.append(value)
@@ -270,15 +276,17 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
 
 @app.route('/export', methods=['GET'])
 def export_db():
-    """Exporte la base de données PostgreSQL vers SQLite et retourne en base64"""
-    # Remplacement temporaire de validate_user_id() par un user_id fixe pour les tests
-    user_id = "test_user_123"  # Remplacez par un user_id valide pour votre base de données
+    """Export PostgreSQL database to SQLite and return as base64"""
+    # Reintroduce user_id validation
+    user_id = validate_user_id()
+    if not isinstance(user_id, str):
+        return user_id  # Returns error response if validation fails
     
     pg_conn = None
     
     try:
         pg_conn = get_conn()
-        pg_cur = pg_conn.cursor(cursor_factory=RealDictCursor)
+        pg_cur = pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         with temp_sqlite_db() as (sqlite_conn, sqlite_path):
             sqlite_cur = sqlite_conn.cursor()
@@ -326,7 +334,7 @@ def export_db():
                 "size_bytes": file_size
             })
             
-    except Psycopg2Error as db_error:
+    except psycopg2.Error as db_error:
         logging.error(f"Erreur de base de données lors de l'exportation : {str(db_error)}")
         return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
         
