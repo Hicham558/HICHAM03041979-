@@ -395,7 +395,8 @@ def export_table_with_user_id(pg_cur, sqlite_cur, table_name, user_id):
     
     logging.info(f"Successfully exported {total_rows} rows from table {table_name_upper}")
     return total_rows    
-    @app.route('/valider_vendeur', methods=['POST'])
+
+@app.route('/valider_vendeur', methods=['POST'])
 def valider_vendeur():
     """
     Endpoint pour valider un vendeur en vérifiant son nom et son mot de passe.
