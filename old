@@ -1,10 +1,14 @@
+import sqlite3
+import tempfile
+import base64
+import os
+from contextlib import contextmanager
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
 import logging
-import os
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from psycopg2 import Error as Psycopg2Error
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -62,7 +66,730 @@ def index():
         return 'API en ligne - Connexion PostgreSQL OK'
     except Exception as e:
         return f'Erreur connexion DB : {e}', 500
+        
 
+
+
+
+@contextmanager
+def temp_sqlite_db():
+    """Context manager for temporary SQLite database"""
+    tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
+    sqlite_path = tmpfile.name
+    tmpfile.close()
+    
+    try:
+        conn = sqlite3.connect(sqlite_path)
+        yield conn, sqlite_path
+    finally:
+        conn.close()
+        if os.path.exists(sqlite_path):
+            os.unlink(sqlite_path)
+
+def get_table_structure_info(pg_cur, table_name):
+    """Get detailed structure info including identity columns"""
+    
+    # Get basic column info
+    pg_cur.execute("""
+        SELECT 
+            column_name, 
+            data_type, 
+            column_default, 
+            is_nullable,
+            character_maximum_length, 
+            numeric_precision, 
+            numeric_scale,
+            is_identity,
+            identity_generation
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position
+    """, (table_name,))
+    
+    columns = pg_cur.fetchall()
+    
+    # Get primary key info
+    pg_cur.execute("""
+        SELECT column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu 
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_schema = 'public' 
+        AND tc.table_name = %s
+        AND tc.constraint_type = 'PRIMARY KEY'
+        ORDER BY kcu.ordinal_position
+    """, (table_name,))
+    
+    primary_keys = [row['column_name'] for row in pg_cur.fetchall()]
+    
+    # Alternative check for sequences (older PostgreSQL versions)
+    identity_columns = []
+    for col in columns:
+        if (col['is_identity'] == 'YES' or 
+            ('nextval(' in str(col['column_default']).lower() and 
+             '_seq' in str(col['column_default']).lower())):
+            identity_columns.append(col['column_name'])
+    
+    return columns, primary_keys, identity_columns
+
+def map_postgres_to_sqlite_type_v2(pg_type, column_default, column_name, char_max_length, is_identity, is_pk):
+    """Enhanced mapping with explicit identity detection"""
+    pg_type = pg_type.lower()
+    
+    # Handle IDENTITY columns explicitly
+    if is_identity:
+        return "INTEGER PRIMARY KEY AUTOINCREMENT", None
+    
+    # Map regular types
+    if pg_type in ['smallint', 'integer', 'int', 'int2', 'int4']:
+        sqlite_type = "INTEGER"
+    elif pg_type in ['bigint', 'int8']:
+        sqlite_type = "INTEGER"
+    elif pg_type in ['decimal', 'numeric', 'real', 'float4', 'float8']:
+        sqlite_type = "REAL"
+    elif pg_type == 'double precision':
+        sqlite_type = "DOUBLE PRECISION"
+    elif pg_type == 'boolean':
+        sqlite_type = "INTEGER"  # Use INTEGER for boolean
+    elif pg_type in ['date', 'timestamp', 'timestamptz', 'time', 'timetz']:
+        sqlite_type = "TEXT"
+    elif pg_type in ['json', 'jsonb']:
+        sqlite_type = "TEXT"
+    elif pg_type.startswith('varchar'):
+        if char_max_length:
+            sqlite_type = f"VARCHAR({char_max_length})"
+        else:
+            sqlite_type = "VARCHAR(30)"
+    elif pg_type in ['text']:
+        sqlite_type = "TEXT"
+    elif pg_type.startswith('char') or pg_type == 'character':
+        if char_max_length:
+            sqlite_type = f"CHAR({char_max_length})"
+        else:
+            sqlite_type = "CHAR(1)"
+    elif pg_type == 'uuid':
+        sqlite_type = "TEXT"
+    elif pg_type.startswith('bytea'):
+        sqlite_type = "BLOB"
+    else:
+        sqlite_type = "VARCHAR(30)"
+    
+    # Add PRIMARY KEY if this column is a primary key (but not identity)
+    if is_pk and not is_identity:
+        sqlite_type += " PRIMARY KEY"
+    
+    # Handle default values
+    default_clause = None
+    if column_default:
+        default_str = str(column_default).lower()
+        if 'true' in default_str:
+            default_clause = "DEFAULT 1"
+        elif 'false' in default_str:
+            default_clause = "DEFAULT 0"
+        elif not ('nextval(' in default_str or 'identity' in default_str):
+            # Handle other default values (strings, numbers) - exclude sequences
+            clean_default = column_default.replace('::text', '').replace("'", "''")
+            default_clause = f"DEFAULT '{clean_default}'"
+    
+    return sqlite_type, default_clause
+
+@app.route('/export', methods=['GET'])
+def export_db():
+    """Export PostgreSQL database to SQLite and return as base64"""
+    pg_conn = None
+    
+    try:
+        # Get PostgreSQL connection
+        pg_conn = get_conn()
+        pg_cur = pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        with temp_sqlite_db() as (sqlite_conn, sqlite_path):
+            sqlite_cur = sqlite_conn.cursor()
+            
+            # Enable foreign keys in SQLite
+            sqlite_cur.execute("PRAGMA foreign_keys = ON")
+            
+            # Get all tables with better filtering
+            pg_cur.execute("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+            """)
+            
+            tables = [row['table_name'] for row in pg_cur.fetchall()]
+            
+            if not tables:
+                return jsonify({'message': 'No tables found to export'}), 200
+            
+            # Process each table
+            exported_tables = []
+            for table in tables:
+                try:
+                    export_table(pg_cur, sqlite_cur, table)
+                    exported_tables.append(table)
+                except Exception as table_error:
+                    logging.error(f"Error exporting table {table}: {str(table_error)}")
+                    # Continue with other tables rather than failing completely
+                    continue
+            
+            sqlite_conn.commit()
+            
+            # Read and encode the SQLite file
+            with open(sqlite_path, "rb") as f:
+                file_size = os.path.getsize(sqlite_path)
+                
+                # Check file size (limit to ~50MB base64 encoded)
+                max_size = 37 * 1024 * 1024  # ~37MB raw = ~50MB base64
+                if file_size > max_size:
+                    return jsonify({
+                        'error': f'Database too large for export: {file_size} bytes'
+                    }), 413
+                
+                b64_db = base64.b64encode(f.read()).decode("utf-8")
+            
+            return jsonify({
+                "db": b64_db,
+                "tables_exported": exported_tables,
+                "total_tables": len(exported_tables),
+                "size_bytes": file_size
+            })
+            
+    except psycopg2.Error as db_error:
+        logging.error(f"Database error during export: {str(db_error)}")
+        return jsonify({'error': 'Database connection error'}), 500
+        
+    except Exception as e:
+        logging.error(f"Unexpected error during export: {str(e)}")
+        return jsonify({'error': 'Export failed'}), 500
+        
+    finally:
+        if pg_conn:
+            pg_conn.close()
+
+def export_table(pg_cur, sqlite_cur, table_name):
+    """Export a single table from PostgreSQL to SQLite with explicit identity detection"""
+    
+    # Get detailed table structure
+    columns, primary_keys, identity_columns = get_table_structure_info(pg_cur, table_name)
+    
+    if not columns:
+        logging.warning(f"No columns found for table {table_name}")
+        return
+    
+    logging.info(f"Table {table_name}: PK={primary_keys}, Identity={identity_columns}")
+    
+    # Build CREATE TABLE statement
+    col_defs = []
+    column_info = []
+    
+    for col in columns:
+        col_name = col['column_name']
+        is_identity = col_name in identity_columns
+        is_pk = col_name in primary_keys
+        
+        sqlite_type, default_clause = map_postgres_to_sqlite_type_v2(
+            col['data_type'], 
+            col['column_default'],
+            col_name,
+            col['character_maximum_length'],
+            is_identity,
+            is_pk
+        )
+        
+        # Build column definition with UPPERCASE column name
+        col_def = f'{col_name.upper()} {sqlite_type}'
+        
+        # Handle NOT NULL and DEFAULT for non-identity, non-pk columns
+        if not is_identity and not is_pk:
+            # Only add NOT NULL for explicitly non-nullable columns WITH defaults
+            if (col['is_nullable'] == 'NO' and 
+                col['column_default'] is not None and 
+                not ('nextval(' in str(col['column_default']).lower())):
+                col_def += " NOT NULL"
+            
+            # Add default value if exists
+            if default_clause:
+                col_def += f" {default_clause}"
+        
+        col_defs.append(col_def)
+        column_info.append({
+            'name': col_name,
+            'type': col['data_type'],
+            'default': col['column_default'],
+            'nullable': col['is_nullable'],
+            'is_identity': is_identity
+        })
+    
+    # Create table with UPPERCASE table name - quote only if needed for reserved words
+    table_name_upper = table_name.upper()
+    if table_name_upper in ['TABLES', 'ORDER', 'GROUP', 'INDEX', 'SELECT', 'INSERT', 'UPDATE', 'DELETE']:
+        table_name_quoted = f'"{table_name_upper}"'
+    else:
+        table_name_quoted = table_name_upper
+    
+    create_sql = f'CREATE TABLE {table_name_quoted} ({", ".join(col_defs)})'
+    
+    try:
+        sqlite_cur.execute(create_sql)
+        logging.info(f"Created table: {table_name_upper}")
+        logging.info(f"SQL: {create_sql}")
+    except Exception as e:
+        logging.error(f"Error creating table {table_name}: {str(e)}")
+        logging.error(f"SQL: {create_sql}")
+        raise
+    
+    # Copy data in batches
+    batch_size = 1000
+    offset = 0
+    total_rows = 0
+    
+    while True:
+        pg_cur.execute(f'SELECT * FROM "{table_name}" LIMIT %s OFFSET %s', 
+                      (batch_size, offset))
+        rows = pg_cur.fetchall()
+        
+        if not rows:
+            break
+        
+        # Process rows
+        processed_rows = []
+        for row in rows:
+            processed_row = []
+            for col_info in column_info:
+                col_name = col_info['name']
+                value = row[col_name]
+                
+                # Handle None/NULL values with defaults
+                if value is None:
+                    if col_info['default'] and not col_info['is_identity']:
+                        default_str = str(col_info['default']).lower()
+                        if 'true' in default_str:
+                            value = 1
+                        elif 'false' in default_str:
+                            value = 0
+                
+                # Convert boolean values to integers
+                elif isinstance(value, bool):
+                    value = 1 if value else 0
+                
+                processed_row.append(value)
+            
+            processed_rows.append(tuple(processed_row))
+        
+        # Insert batch using UPPERCASE table name
+        placeholders = ",".join(["?"] * len(column_info))
+        try:
+            sqlite_cur.executemany(
+                f'INSERT INTO {table_name_quoted} VALUES ({placeholders})',
+                processed_rows
+            )
+            total_rows += len(processed_rows)
+        except Exception as e:
+            logging.error(f"Error inserting data into {table_name}: {str(e)}")
+            logging.error(f"Sample row: {processed_rows[0] if processed_rows else 'No rows'}")
+            raise
+        
+        offset += batch_size
+        
+        if offset % 10000 == 0:
+            logging.info(f"Exported {offset} rows from {table_name_upper}")
+    
+    logging.info(f"Successfully exported {total_rows} rows from table {table_name_upper}")
+
+def create_sqlite_schema_structure():
+    """
+    Structure SQLite complète basée sur votre schéma PostgreSQL
+    Toutes les tables avec la conversion exacte des types et contraintes
+    """
+    schema_sql = '''
+    -- Structure SQLite optimisée basée sur votre schéma PostgreSQL
+    
+    CREATE TABLE CATEGORIE (
+        NUMER_CATEGORIE INTEGER PRIMARY KEY AUTOINCREMENT,
+        DESCRIPTION_C VARCHAR(30)
+    );
+    
+    CREATE TABLE SALLE (
+        NUMERO_SALLE INTEGER PRIMARY KEY AUTOINCREMENT,
+        DESCRIPTION_S VARCHAR(30)
+    );
+    
+    CREATE TABLE "TABLES" (
+        NUMERO_TABLE1 INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_SALLE INTEGER,
+        POSITION_X INTEGER,
+        POSITION_Y INTEGER,
+        DESCRIPTION_T VARCHAR(30),
+        ETAT VARCHAR(30)
+    );
+    
+    CREATE TABLE UTILISATEUR (
+        NOM VARCHAR(10),
+        STATUE VARCHAR(10),
+        PASSWORD2 VARCHAR(30),
+        O1 INTEGER,
+        O2 INTEGER,
+        O3 INTEGER,
+        O4 INTEGER,
+        O5 INTEGER,
+        O6 INTEGER,
+        O7 INTEGER,
+        O8 INTEGER,
+        O9 INTEGER,
+        O10 INTEGER,
+        NUMERO_UTIL INTEGER PRIMARY KEY AUTOINCREMENT,
+        O11 INTEGER NOT NULL DEFAULT 1,
+        O12 INTEGER NOT NULL DEFAULT 1,
+        O13 INTEGER NOT NULL DEFAULT 1,
+        O14 INTEGER NOT NULL DEFAULT 1,
+        O15 INTEGER NOT NULL DEFAULT 1,
+        O16 INTEGER NOT NULL DEFAULT 1,
+        O17 INTEGER NOT NULL DEFAULT 1,
+        O18 INTEGER NOT NULL DEFAULT 1,
+        O19 INTEGER NOT NULL DEFAULT 1,
+        O20 INTEGER NOT NULL DEFAULT 1,
+        O21 INTEGER NOT NULL DEFAULT 1,
+        O22 INTEGER NOT NULL DEFAULT 1,
+        O23 INTEGER NOT NULL DEFAULT 1,
+        O24 INTEGER NOT NULL DEFAULT 1,
+        O25 INTEGER NOT NULL DEFAULT 1,
+        O26 INTEGER NOT NULL DEFAULT 1,
+        O27 INTEGER NOT NULL DEFAULT 1,
+        O28 INTEGER NOT NULL DEFAULT 1,
+        O29 INTEGER NOT NULL DEFAULT 1,
+        O30 INTEGER NOT NULL DEFAULT 1
+    );
+    
+    CREATE TABLE FOURNISSEUR (
+        NUMERO_FOU INTEGER PRIMARY KEY AUTOINCREMENT,
+        REFERENCE VARCHAR(30),
+        NOM VARCHAR(100),
+        ADRESSE VARCHAR(100),
+        POST VARCHAR(30),
+        VILLE VARCHAR(30),
+        PAYS VARCHAR(30),
+        CONTACT VARCHAR(30),
+        TEL1 VARCHAR(30),
+        TEL2 VARCHAR(30),
+        FAX VARCHAR(30),
+        REM VARCHAR(200),
+        BANC VARCHAR(30),
+        IDFIS VARCHAR(30),
+        AI VARCHAR(30),
+        NIS VARCHAR(30),
+        RC VARCHAR(30),
+        SOLDE VARCHAR(30),
+        M1 VARCHAR(30),
+        M2 VARCHAR(30),
+        M3 VARCHAR(30),
+        M4 VARCHAR(30),
+        M5 VARCHAR(30),
+        EXONORE INTEGER
+    );
+    
+    CREATE TABLE COMANDE (
+        NUMERO_COMANDE INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_TABLE INTEGER,
+        DATE_COMANDE TEXT,
+        ETAT_C VARCHAR(30),
+        CONNECTION1 INTEGER,
+        NUMERO_UTIL INTEGER,
+        NATURE VARCHAR(30),
+        COMPTEUR INTEGER,
+        CHEQUE VARCHAR(30)
+    );
+    
+    CREATE TABLE ITEM (
+        NUMERO_ITEM INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_CATEGORIE INTEGER,
+        REF VARCHAR(30),
+        DESIGNATION VARCHAR(50),
+        PRIX VARCHAR(30),
+        PRIXB VARCHAR(30),
+        PRIXVH VARCHAR(30),
+        QTE DOUBLE PRECISION,
+        QTEA INTEGER,
+        MODEL VARCHAR(50),
+        REMARQUE VARCHAR(50),
+        NUMERO_FOU INTEGER,
+        TVA INTEGER,
+        BAR VARCHAR(30),
+        PRIX2 VARCHAR(30),
+        PRIX3 VARCHAR(30),
+        PRIX4 VARCHAR(30),
+        PRIX5 VARCHAR(30),
+        TVAV VARCHAR(30),
+        PRIXBA VARCHAR(30),
+        EXP TEXT,
+        DEBUT TEXT,
+        FIN TEXT,
+        PROMO VARCHAR(30),
+        M1 VARCHAR(30),
+        M2 VARCHAR(30),
+        M3 VARCHAR(30),
+        M4 VARCHAR(30),
+        M5 VARCHAR(30),
+        DISPONIBLE INTEGER,
+        GERE INTEGER,
+        TEMP_FABRICATION INTEGER
+    );
+    
+    CREATE TABLE "FOURNISSEUR" (
+        "NUMERO_FOU" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "REFERENCE" TEXT,
+        "NOM" TEXT,
+        "ADRESSE" TEXT,
+        "POST" TEXT,
+        "VILLE" TEXT,
+        "PAYS" TEXT,
+        "CONTACT" TEXT,
+        "TEL1" TEXT,
+        "TEL2" TEXT,
+        "FAX" TEXT,
+        "REM" TEXT,
+        "BANC" TEXT,
+        "IDFIS" TEXT,
+        "AI" TEXT,
+        "NIS" TEXT,
+        "RC" TEXT,
+        "SOLDE" TEXT,
+        "M1" TEXT,
+        "M2" TEXT,
+        "M3" TEXT,
+        "M4" TEXT,
+        "M5" TEXT,
+        "EXONORE" BOOLEAN
+    );
+    
+    CREATE TABLE "COMANDE" (
+        "NUMERO_COMANDE" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "NUMERO_TABLE" INTEGER,
+        "DATE_COMANDE" TEXT,
+        "ETAT_C" TEXT,
+        "CONNECTION1" INTEGER,
+        "NUMERO_UTIL" INTEGER,
+        "NATURE" TEXT,
+        "COMPTEUR" INTEGER,
+        "CHEQUE" TEXT
+    );
+    
+    CREATE TABLE "ITEM" (
+        "NUMERO_ITEM" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "NUMERO_CATEGORIE" INTEGER,
+        "REF" TEXT,
+        "DESIGNATION" TEXT,
+        "PRIX" TEXT,
+        "PRIXB" TEXT,
+        "PRIXVH" TEXT,
+        "QTE" REAL,
+        "QTEA" INTEGER,
+        "MODEL" TEXT,
+        "REMARQUE" TEXT,
+        "NUMERO_FOU" INTEGER,
+        "TVA" INTEGER,
+        "BAR" TEXT,
+        "PRIX2" TEXT,
+        "PRIX3" TEXT,
+        "PRIX4" TEXT,
+        "PRIX5" TEXT,
+        "TVAV" TEXT,
+        "PRIXBA" TEXT,
+        "EXP" TEXT,
+        "DEBUT" TEXT,
+        "FIN" TEXT,
+        "PROMO" TEXT,
+        "M1" TEXT,
+        "M2" TEXT,
+        "M3" TEXT,
+        "M4" TEXT,
+        "M5" TEXT,
+        "DISPONIBLE" BOOLEAN,
+        "GERE" BOOLEAN,
+        "TEMP_FABRICATION" INTEGER
+    );
+    
+    CREATE TABLE ATTACHE (
+        NUMERO_ATTACHE INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_COMANDE INTEGER,
+        NUMERO_ITEM INTEGER,
+        QUANTITE DOUBLE PRECISION,
+        PRIXT VARCHAR(30),
+        REMARQUE VARCHAR(30),
+        BNFC VARCHAR(30),
+        MARGE VARCHAR(30),
+        PRIXBH VARCHAR(30),
+        ACHATFX VARCHAR(30),
+        SEND INTEGER
+    );
+    
+    CREATE TABLE MOUVEMENT (
+        NUMERO_MOUVEMENT INTEGER PRIMARY KEY AUTOINCREMENT,
+        DATE_M TEXT,
+        ETAT_M VARCHAR(50),
+        NUMERO_FOUR INTEGER,
+        REFDOC VARCHAR(30),
+        VERS VARCHAR(30),
+        NATURE VARCHAR(30),
+        CONNECTION1 INTEGER,
+        NUMERO_UTIL INTEGER,
+        CHEQUE VARCHAR(30)
+    );
+    
+    CREATE TABLE ATTACHE2 (
+        NUMERO_ATTACHE2 INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_ITEM INTEGER,
+        NUMERO_MOUVEMENT INTEGER,
+        QTEA DOUBLE PRECISION,
+        NQTE DOUBLE PRECISION,
+        NPRIX VARCHAR(30),
+        PUMP VARCHAR(30),
+        SEND INTEGER
+    );
+    
+    CREATE TABLE ATTACHETMP (
+        NUMERO_ATTACHE INTEGER PRIMARY KEY AUTOINCREMENT,
+        NUMERO_COMANDE INTEGER,
+        NUMERO_ITEM INTEGER,
+        QUANTITE DOUBLE PRECISION,
+        PRIXT VARCHAR(30),
+        REMARQUE VARCHAR(30),
+        BNFC VARCHAR(30),
+        MARGE VARCHAR(30),
+        PRIXBH VARCHAR(30),
+        ACHATFX VARCHAR(30),
+        SEND INTEGER
+    );
+    
+    CREATE TABLE "CLIENT" (
+        "REFERENCE" TEXT,
+        "NOM" TEXT,
+        "ADRESSE" TEXT,
+        "POST" TEXT,
+        "VILLE" TEXT,
+        "PAYS" TEXT,
+        "CONTACT" TEXT,
+        "TEL1" TEXT,
+        "TEL2" TEXT,
+        "FAX" TEXT,
+        "REM" TEXT,
+        "CATP" INTEGER,
+        "BANC" TEXT,
+        "IDFIS" TEXT,
+        "AI" TEXT,
+        "NIS" TEXT,
+        "RC" TEXT,
+        "SOLDE" TEXT,
+        "SMAX" TEXT,
+        "M1" TEXT,
+        "M2" TEXT,
+        "M3" TEXT,
+        "M4" TEXT,
+        "M5" TEXT,
+        "EXONORE" BOOLEAN,
+        "NUMERO_CLT" INTEGER PRIMARY KEY AUTOINCREMENT
+    );
+    
+    CREATE TABLE "CLOTURE" (
+        "DATE_CLOTURE" TEXT,
+        "PRELEVEMENT" TEXT,
+        "FONDCAISSE" TEXT,
+        "NUMERO_CLOTURE" INTEGER PRIMARY KEY AUTOINCREMENT
+    );
+    
+    CREATE TABLE "CODEBAR" (
+        "N" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "BAR" TEXT,
+        "BAR2" TEXT
+    );
+    
+    CREATE TABLE "ENCAISSE" (
+        "NUMERO_ENCAISSE" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "APAYE" TEXT,
+        "REGLEMENT" TEXT,
+        "TVA" TEXT,
+        "HT" TEXT,
+        "NUMERO_COMANDE" INTEGER,
+        "NUMERO_CLOTURE" INTEGER,
+        "TIME_ENC" TEXT,
+        "ORIGINE" TEXT,
+        "SOLDER" TEXT
+    );
+    
+    CREATE TABLE "ITEM_COMPOSITION" (
+        "ID_CMP" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "NUMERO_ITEM" INTEGER NOT NULL,
+        "NUMERO_ITEM_CMP" INTEGER NOT NULL,
+        "DESIGNATION_CMP" TEXT NOT NULL,
+        "QUANTITE_CMP" REAL NOT NULL,
+        "PRIXBH_CMP" TEXT,
+        "PRIXT_CMP" TEXT,
+        "REMARQUE_CMP" TEXT,
+        "SEND_CMP" BOOLEAN DEFAULT 0,
+        "M1_CMP" TEXT
+    );
+    
+    CREATE TABLE "MOUVEMENTC" (
+        "NUMERO_MC" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "DATE_MC" TEXT,
+        "TIME_MC" TEXT,
+        "MONTANT" TEXT,
+        "JUSTIFICATIF" TEXT,
+        "NUMERO_UTIL" INTEGER,
+        "ORIGINE" TEXT,
+        "CF" TEXT,
+        "NUMERO_CF" INTEGER
+    );
+    
+    CREATE TABLE "OBSERVATION" (
+        "NUMERO_OBS" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "NUMERO_COMANDE" INTEGER,
+        "DOC" TEXT,
+        "TEXTS" TEXT
+    );
+    
+    CREATE TABLE "TMP" (
+        "V1" TEXT,
+        "V2" TEXT,
+        "V3" TEXT,
+        "V4" TEXT,
+        "V5" TEXT,
+        "V6" TEXT,
+        "V7" TEXT,
+        "V8" TEXT,
+        "V9" TEXT,
+        "V10" TEXT,
+        "F1" TEXT,
+        "F2" TEXT,
+        "F3" TEXT,
+        "F4" TEXT,
+        "F5" TEXT,
+        "F6" TEXT,
+        "F7" TEXT,
+        "F8" TEXT,
+        "F9" TEXT,
+        "F10" TEXT,
+        "R1" TEXT,
+        "R2" TEXT,
+        "R3" TEXT,
+        "R4" TEXT,
+        "R5" TEXT,
+        "R6" TEXT,
+        "R7" TEXT,
+        "R8" TEXT,
+        "R9" TEXT,
+        "R10" TEXT,
+        "N" INTEGER PRIMARY KEY AUTOINCREMENT
+    );
+    
+    CREATE TABLE "TVA" (
+        "NUMERO_TVA" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "TVA" INTEGER
+    );
+    '''
+    return schema_sql
 @app.route('/valider_vendeur', methods=['POST'])
 def valider_vendeur():
     """
