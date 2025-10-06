@@ -47,15 +47,7 @@ def index():
 
 
 
-import base64
-import logging
-import os
-import tempfile
-import sqlite3
-import psycopg2
-from psycopg2 import extras
-from contextlib import contextmanager
-from flask import jsonify, request
+
 
 @contextmanager
 def temp_sqlite_db():
