@@ -48,7 +48,6 @@ def index():
 
 
 
-
 @contextmanager
 def temp_sqlite_db():
     """Context manager for temporary SQLite database"""
@@ -64,8 +63,8 @@ def temp_sqlite_db():
         if os.path.exists(sqlite_path):
             os.unlink(sqlite_path)
 
-def get_table_structure_info(pg_cur, table_name):
-    """Get detailed structure info including identity columns"""
+def get_table_structure_info(pg_cur, table_name, user_id):
+    """Get detailed structure info including identity columns with user_id filtering"""
     # Get basic column info
     pg_cur.execute("""
         SELECT 
@@ -173,7 +172,7 @@ def map_postgres_to_sqlite_type_v2(pg_type, column_default, column_name, char_ma
 
 @app.route('/export', methods=['GET'])
 def export_db():
-    """Export PostgreSQL database to SQLite and return as base64"""
+    """Export PostgreSQL database to SQLite and return as base64 with user_id filtering"""
     user_id = request.headers.get('X-User-ID')
     if not user_id:
         logging.error("Aucun en-tête X-User-ID fourni")
@@ -183,7 +182,7 @@ def export_db():
     
     try:
         # Get PostgreSQL connection
-        pg_conn = get_conn()  # Assumes get_conn() is defined elsewhere
+        pg_conn = get_conn()
         pg_cur = pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         with temp_sqlite_db() as (sqlite_conn, sqlite_path):
@@ -192,40 +191,21 @@ def export_db():
             # Enable foreign keys in SQLite
             sqlite_cur.execute("PRAGMA foreign_keys = ON")
             
-            # Define expected tables
-            expected_tables = [
+            # Define all tables that should be exported with user_id filtering
+            tables_to_export = [
                 'categorie', 'salle', 'tables', 'utilisateur', 'fournisseur', 'comande',
                 'item', 'attache', 'mouvement', 'attache2', 'attachetmp', 'client',
                 'cloture', 'codebar', 'encaisse', 'item_composition', 'mouvementc',
                 'observation', 'tmp', 'tva'
             ]
             
-            # Get actual tables from PostgreSQL
-            pg_cur.execute("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_type = 'BASE TABLE'
-                ORDER BY table_name
-            """)
-            
-            tables = [row['table_name'].lower() for row in pg_cur.fetchall()]
-            logging.info(f"Tables trouvées dans PostgreSQL : {tables}")
-            
-            # Identify missing tables
-            missing_tables = [t for t in expected_tables if t.lower() not in tables]
-            if missing_tables:
-                logging.warning(f"Tables manquantes dans PostgreSQL : {missing_tables}")
-            
-            if not tables:
-                return jsonify({'message': 'No tables found to export'}), 200
-            
             # Process each table
             exported_tables = []
             table_contents = {}
-            for table in expected_tables:
+            
+            for table in tables_to_export:
                 try:
-                    row_count = export_table(pg_cur, sqlite_cur, table, user_id)
+                    row_count = export_table_with_user_id(pg_cur, sqlite_cur, table, user_id)
                     exported_tables.append(table)
                     table_contents[table] = row_count
                     logging.info(f"Table {table} exportée avec {row_count} lignes")
@@ -257,11 +237,11 @@ def export_db():
                 "db": b64_db,
                 "tables_exported": exported_tables,
                 "total_tables": len(exported_tables),
-                "expected_tables": expected_tables,
-                "missing_tables": missing_tables,
+                "expected_tables": tables_to_export,
                 "created_tables": created_tables,
                 "table_contents": table_contents,
-                "size_bytes": file_size
+                "size_bytes": file_size,
+                "user_id": user_id
             })
             
     except psycopg2.Error as db_error:
@@ -276,18 +256,14 @@ def export_db():
         if pg_conn:
             pg_conn.close()
 
-def export_table(pg_cur, sqlite_cur, table_name, user_id):
-    """Export a single table from PostgreSQL to SQLite with user_id filtering and NUMERO_UTIL exclusion"""
+def export_table_with_user_id(pg_cur, sqlite_cur, table_name, user_id):
+    """Export a single table from PostgreSQL to SQLite with user_id filtering"""
     
-    # Define tables that should be filtered by user_id
-    user_id_tables = ['utilisateur', 'comande', 'mouvement', 'mouvementc']
-    
-    # Get table structure, excluding NUMERO_UTIL
-    columns, primary_keys, identity_columns = get_table_structure_info(pg_cur, table_name)
-    columns = [col for col in columns if col['column_name'].lower() != 'numero_util']
+    # Get table structure
+    columns, primary_keys, identity_columns = get_table_structure_info(pg_cur, table_name, user_id)
     
     if not columns:
-        logging.warning(f"No columns found for table {table_name} after excluding NUMERO_UTIL")
+        logging.warning(f"No columns found for table {table_name}")
         return 0
     
     logging.info(f"Table {table_name}: PK={primary_keys}, Identity={identity_columns}")
@@ -310,7 +286,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
             is_pk
         )
         
-        # Build column definition with UPPERCASE column name
+        # Build column definition
         col_def = f'{col_name.upper()} {sqlite_type}'
         
         # Handle NOT NULL and DEFAULT for non-identity, non-pk columns
@@ -344,26 +320,31 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
     try:
         sqlite_cur.execute(create_sql)
         logging.info(f"Created table: {table_name_upper}")
-        logging.info(f"SQL: {create_sql}")
     except Exception as e:
         logging.error(f"Error creating table {table_name}: {str(e)}")
-        logging.error(f"SQL: {create_sql}")
         raise
     
-    # Copy data in batches with user_id filtering
+    # Copy data with user_id filtering
     batch_size = 1000
     offset = 0
     total_rows = 0
     
-    # Adjust SELECT query based on whether table needs user_id filtering
-    if table_name.lower() in user_id_tables:
-        query = f'SELECT {", ".join([f"\"{col['name']}\"" for col in columns])} FROM "{table_name}" WHERE user_id = %s LIMIT %s OFFSET %s'
-        params = (user_id, batch_size, offset)
+    # Check if table has user_id column
+    has_user_id = any(col['name'] == 'user_id' for col in column_info)
+    
+    # Build SELECT query with user_id filtering
+    column_names = [f'"{col["name"]}"' for col in column_info]
+    select_columns = ", ".join(column_names)
+    
+    if has_user_id:
+        query = f'SELECT {select_columns} FROM "{table_name}" WHERE user_id = %s LIMIT %s OFFSET %s'
+        base_params = (user_id,)
     else:
-        query = f'SELECT {", ".join([f"\"{col['name']}\"" for col in columns])} FROM "{table_name}" LIMIT %s OFFSET %s'
-        params = (batch_size, offset)
+        query = f'SELECT {select_columns} FROM "{table_name}" LIMIT %s OFFSET %s'
+        base_params = ()
     
     while True:
+        params = base_params + (batch_size, offset)
         pg_cur.execute(query, params)
         rows = pg_cur.fetchall()
         
@@ -395,7 +376,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
             
             processed_rows.append(tuple(processed_row))
         
-        # Insert batch using UPPERCASE table name
+        # Insert batch
         placeholders = ",".join(["?"] * len(column_info))
         try:
             sqlite_cur.executemany(
@@ -405,7 +386,6 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
             total_rows += len(processed_rows)
         except Exception as e:
             logging.error(f"Error inserting data into {table_name}: {str(e)}")
-            logging.error(f"Sample row: {processed_rows[0] if processed_rows else 'No rows'}")
             raise
         
         offset += batch_size
@@ -414,8 +394,7 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
             logging.info(f"Exported {offset} rows from {table_name_upper}")
     
     logging.info(f"Successfully exported {total_rows} rows from table {table_name_upper}")
-    return total_rows
-    
+    return total_rows    
     @app.route('/valider_vendeur', methods=['POST'])
 def valider_vendeur():
     """
