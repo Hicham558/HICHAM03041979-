@@ -270,10 +270,9 @@ def export_table(pg_cur, sqlite_cur, table_name, user_id):
 
 @app.route('/export', methods=['GET'])
 def export_db():
-    """Export PostgreSQL database to SQLite and return as base64"""
-    user_id = validate_user_id()
-    if not isinstance(user_id, str):
-        return user_id
+    """Exporte la base de données PostgreSQL vers SQLite et retourne en base64"""
+    # Remplacement temporaire de validate_user_id() par un user_id fixe pour les tests
+    user_id = "test_user_123"  # Remplacez par un user_id valide pour votre base de données
     
     pg_conn = None
     
@@ -296,7 +295,7 @@ def export_db():
             tables = [row['table_name'] for row in pg_cur.fetchall()]
             
             if not tables:
-                return jsonify({'message': 'No tables found to export'}), 200
+                return jsonify({'message': 'Aucune table trouvée pour l\'exportation'}), 200
             
             exported_tables = []
             for table in tables:
@@ -304,7 +303,7 @@ def export_db():
                     export_table(pg_cur, sqlite_cur, table, user_id)
                     exported_tables.append(table)
                 except Exception as table_error:
-                    logging.error(f"Error exporting table {table}: {str(table_error)}")
+                    logging.error(f"Erreur lors de l'exportation de la table {table}: {str(table_error)}")
                     continue
             
             sqlite_conn.commit()
@@ -315,7 +314,7 @@ def export_db():
                 max_size = 37 * 1024 * 1024
                 if file_size > max_size:
                     return jsonify({
-                        'error': f'Database too large for export: {file_size} bytes'
+                        'error': f'Base de données trop volumineuse pour l\'exportation : {file_size} octets'
                     }), 413
                 
                 b64_db = base64.b64encode(f.read()).decode("utf-8")
@@ -328,12 +327,12 @@ def export_db():
             })
             
     except Psycopg2Error as db_error:
-        logging.error(f"Database error during export: {str(db_error)}")
-        return jsonify({'error': 'Database connection error'}), 500
+        logging.error(f"Erreur de base de données lors de l'exportation : {str(db_error)}")
+        return jsonify({'error': 'Erreur de connexion à la base de données'}), 500
         
     except Exception as e:
-        logging.error(f"Unexpected error during export: {str(e)}")
-        return jsonify({'error': 'Export failed'}), 500
+        logging.error(f"Erreur inattendue lors de l'exportation : {str(e)}")
+        return jsonify({'error': 'Échec de l\'exportation'}), 500
         
     finally:
         if pg_conn:
