@@ -3337,6 +3337,451 @@ def liste_produits_par_categorie():
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+# ================================================================
+# ROUTES UPSERT — MIGRATION LOCAL → CLOUD (20 tables)
+# Appelées par migrate_endpoint.py depuis l'app locale.
+# Chaque route reçoit local_id + user_id (header X-User-ID).
+# ON CONFLICT (local_id, user_id) → UPDATE  (idempotent)
+# Prérequis : migration_sql.sql exécuté une fois sur la base cloud
+# ================================================================
+
+def _upsert(conn, table, pk_col, set_cols, vals):
+    """INSERT ... ON CONFLICT (local_id, user_id) DO UPDATE SET ..."""
+    all_cols     = list(vals.keys())
+    cols_str     = ', '.join(f'"{c}"' for c in all_cols)
+    placeholders = ', '.join([f'%({c})s' for c in all_cols])
+    update_str   = ', '.join([f'"{c}" = EXCLUDED."{c}"' for c in set_cols])
+    sql = f"""
+        INSERT INTO {table} ({cols_str})
+        VALUES ({placeholders})
+        ON CONFLICT (local_id, user_id) DO UPDATE SET {update_str}
+        RETURNING {pk_col}
+    """
+    cur = conn.cursor()
+    cur.execute(sql, vals)
+    conn.commit()
+    return cur.fetchone()[0]
+
+def _sv(v, d=''): return str(v) if v is not None else d
+def _iv(v, d=0):
+    try: return int(v) if v is not None else d
+    except: return d
+def _fv(v, d=0.0):
+    try: return float(str(v).replace(',','.')) if v is not None else d
+    except: return d
+def _bv(v, d=False):
+    if v is None: return d
+    return v if isinstance(v, bool) else bool(v)
+
+
+@app.route('/upsert_categorie', methods=['POST'])
+def upsert_categorie():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'categorie', 'numer_categorie', ['description_c'],
+            {'local_id': _iv(d['local_id']), 'description_c': _sv(d.get('description_c')), 'user_id': uid})
+        return jsonify({'numer_categorie': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_salle', methods=['POST'])
+def upsert_salle():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'salle', 'numero_salle', ['description_s'],
+            {'local_id': _iv(d['local_id']), 'description_s': _sv(d.get('description_s')), 'user_id': uid})
+        return jsonify({'numero_salle': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_fournisseur', methods=['POST'])
+def upsert_fournisseur():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        str_cols = ['reference','nom','adresse','post','ville','pays','contact',
+                    'tel1','tel2','fax','rem','banc','idfis','ai','nis','rc',
+                    'solde','m1','m2','m3','m4','m5']
+        set_cols = str_cols + ['exonore']
+        vals = {'local_id': _iv(d['local_id']), 'exonore': _bv(d.get('exonore')), 'user_id': uid}
+        vals.update({c: _sv(d.get(c)) for c in str_cols})
+        pk = _upsert(conn, 'fournisseur', 'numero_fou', set_cols, vals)
+        return jsonify({'numero_fou': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_client', methods=['POST'])
+def upsert_client():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        str_cols = ['reference','nom','adresse','post','ville','pays','contact',
+                    'tel1','tel2','fax','rem','banc','idfis','ai','nis','rc',
+                    'solde','smax','m1','m2','m3','m4','m5']
+        set_cols = str_cols + ['catp','exonore']
+        vals = {'local_id': _iv(d['local_id']), 'catp': _iv(d.get('catp')),
+                'exonore': _bv(d.get('exonore')), 'user_id': uid}
+        vals.update({c: _sv(d.get(c)) for c in str_cols})
+        pk = _upsert(conn, 'client', 'numero_clt', set_cols, vals)
+        return jsonify({'numero_clt': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_utilisateur', methods=['POST'])
+def upsert_utilisateur():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        bool_cols = [f'o{i}' for i in range(1, 31)]
+        set_cols  = ['nom','statue','password2'] + bool_cols
+        vals = {'local_id': _iv(d['local_id']), 'nom': _sv(d.get('nom')),
+                'statue': _sv(d.get('statue'), 'emplo'),
+                'password2': _sv(d.get('password2'), '1234'), 'user_id': uid}
+        vals.update({c: _bv(d.get(c), i > 10) for i, c in enumerate(bool_cols, 1)})
+        pk = _upsert(conn, 'utilisateur', 'numero_util', set_cols, vals)
+        return jsonify({'numero_util': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_tva', methods=['POST'])
+def upsert_tva():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'tva', 'numero_tva', ['tva'],
+            {'local_id': _iv(d['local_id']), 'tva': _iv(d.get('tva')), 'user_id': uid})
+        return jsonify({'numero_tva': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_table', methods=['POST'])
+def upsert_table():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_salle','position_x','position_y','description_t','etat']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_salle': _iv(d.get('numero_salle')),
+                'position_x': _iv(d.get('position_x')),
+                'position_y': _iv(d.get('position_y')),
+                'description_t': _sv(d.get('description_t')),
+                'etat': _sv(d.get('etat')), 'user_id': uid}
+        pk = _upsert(conn, '"TABLES"', 'numero_table1', set_cols, vals)
+        return jsonify({'numero_table1': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_item', methods=['POST'])
+def upsert_item():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        str_cols = ['ref','designation','prix','prixb','prixvh','model','remarque',
+                    'bar','prix2','prix3','prix4','prix5','tvav','prixba','promo',
+                    'm1','m2','m3','m4','m5']
+        set_cols = str_cols + ['numero_categorie','qte','qtea','numero_fou','tva',
+                               'exp','debut','fin','disponible','gere','temp_fabrication']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_categorie': _iv(d.get('numero_categorie')),
+                'qte': _fv(d.get('qte')), 'qtea': _iv(d.get('qtea')),
+                'numero_fou': _iv(d.get('numero_fou')), 'tva': _iv(d.get('tva')),
+                'exp': d.get('exp'), 'debut': d.get('debut'), 'fin': d.get('fin'),
+                'disponible': _bv(d.get('disponible'), True),
+                'gere': _bv(d.get('gere')),
+                'temp_fabrication': _iv(d.get('temp_fabrication')),
+                'user_id': uid}
+        vals.update({c: _sv(d.get(c)) for c in str_cols})
+        pk = _upsert(conn, 'item', 'numero_item', set_cols, vals)
+        return jsonify({'numero_item': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_codebar', methods=['POST'])
+def upsert_codebar():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'codebar', 'n', ['bar','bar2'],
+            {'local_id': _iv(d['local_id']), 'bar': _sv(d.get('bar')),
+             'bar2': _sv(d.get('bar2')), 'user_id': uid})
+        return jsonify({'n': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_mouvement', methods=['POST'])
+def upsert_mouvement():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['date_m','etat_m','numero_four','refdoc','vers','nature','connection1','numero_util','cheque']
+        vals = {'local_id': _iv(d['local_id']),
+                'date_m': d.get('date_m'), 'etat_m': _sv(d.get('etat_m')),
+                'numero_four': _iv(d.get('numero_four')), 'refdoc': _sv(d.get('refdoc')),
+                'vers': _sv(d.get('vers')), 'nature': _sv(d.get('nature')),
+                'connection1': _iv(d.get('connection1')),
+                'numero_util': _iv(d.get('numero_util')),
+                'cheque': _sv(d.get('cheque')), 'user_id': uid}
+        pk = _upsert(conn, 'mouvement', 'numero_mouvement', set_cols, vals)
+        return jsonify({'numero_mouvement': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_cloture', methods=['POST'])
+def upsert_cloture():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'cloture', 'numero_cloture', ['date_cloture','prelevement','fondcaisse'],
+            {'local_id': _iv(d['local_id']), 'date_cloture': d.get('date_cloture'),
+             'prelevement': _sv(d.get('prelevement'), '0'),
+             'fondcaisse': _sv(d.get('fondcaisse'), '0'), 'user_id': uid})
+        return jsonify({'numero_cloture': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_comande', methods=['POST'])
+def upsert_comande():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_table','date_comande','etat_c','connection1','numero_util','nature','compteur','cheque']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_table': _iv(d.get('numero_table')),
+                'date_comande': d.get('date_comande'), 'etat_c': _sv(d.get('etat_c')),
+                'connection1': _iv(d.get('connection1')),
+                'numero_util': _iv(d.get('numero_util')),
+                'nature': _sv(d.get('nature')), 'compteur': _iv(d.get('compteur')),
+                'cheque': _sv(d.get('cheque')), 'user_id': uid}
+        pk = _upsert(conn, 'comande', 'numero_comande', set_cols, vals)
+        return jsonify({'numero_comande': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_attache', methods=['POST'])
+def upsert_attache():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_comande','numero_item','quantite','prixt','remarque','bnfc','marge','prixbh','achatfx','send']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_comande': _iv(d.get('numero_comande')),
+                'numero_item': _iv(d.get('numero_item')),
+                'quantite': _fv(d.get('quantite')), 'prixt': _sv(d.get('prixt'), '0'),
+                'remarque': _sv(d.get('remarque')), 'bnfc': _sv(d.get('bnfc'), '0'),
+                'marge': _sv(d.get('marge'), '0'), 'prixbh': _sv(d.get('prixbh'), '0'),
+                'achatfx': _sv(d.get('achatfx'), '0'), 'send': _bv(d.get('send')),
+                'user_id': uid}
+        pk = _upsert(conn, 'attache', 'numero_attache', set_cols, vals)
+        return jsonify({'numero_attache': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_attache2', methods=['POST'])
+def upsert_attache2():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_item','numero_mouvement','qtea','nqte','nprix','pump','send']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_item': _iv(d.get('numero_item')),
+                'numero_mouvement': _iv(d.get('numero_mouvement')),
+                'qtea': _fv(d.get('qtea')), 'nqte': _fv(d.get('nqte')),
+                'nprix': _sv(d.get('nprix'), '0'), 'pump': _sv(d.get('pump'), '0'),
+                'send': _bv(d.get('send')), 'user_id': uid}
+        pk = _upsert(conn, 'attache2', 'numero_attache2', set_cols, vals)
+        return jsonify({'numero_attache2': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_attachetmp', methods=['POST'])
+def upsert_attachetmp():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_comande','numero_item','quantite','prixt','remarque','bnfc','marge','prixbh','achatfx','send']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_comande': _iv(d.get('numero_comande')),
+                'numero_item': _iv(d.get('numero_item')),
+                'quantite': _fv(d.get('quantite')), 'prixt': _sv(d.get('prixt'), '0'),
+                'remarque': _sv(d.get('remarque')), 'bnfc': _sv(d.get('bnfc'), '0'),
+                'marge': _sv(d.get('marge'), '0'), 'prixbh': _sv(d.get('prixbh'), '0'),
+                'achatfx': _sv(d.get('achatfx'), '0'), 'send': _bv(d.get('send')),
+                'user_id': uid}
+        pk = _upsert(conn, 'attachetmp', 'numero_attache', set_cols, vals)
+        return jsonify({'numero_attache': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_encaisse', methods=['POST'])
+def upsert_encaisse():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['apaye','reglement','tva','ht','numero_comande','numero_cloture','time_enc','origine','solder']
+        vals = {'local_id': _iv(d['local_id']),
+                'apaye': _sv(d.get('apaye'), '0'), 'reglement': _sv(d.get('reglement')),
+                'tva': _sv(d.get('tva'), '0'), 'ht': _sv(d.get('ht'), '0'),
+                'numero_comande': _iv(d.get('numero_comande')),
+                'numero_cloture': _iv(d.get('numero_cloture')),
+                'time_enc': d.get('time_enc'), 'origine': _sv(d.get('origine')),
+                'solder': _sv(d.get('solder'), '0'), 'user_id': uid}
+        pk = _upsert(conn, 'encaisse', 'numero_encaisse', set_cols, vals)
+        return jsonify({'numero_encaisse': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_item_composition', methods=['POST'])
+def upsert_item_composition():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['numero_item','numero_item_cmp','designation_cmp','quantite_cmp',
+                    'prixbh_cmp','prixt_cmp','remarque_cmp','send_cmp','m1_cmp']
+        vals = {'local_id': _iv(d['local_id']),
+                'numero_item': _iv(d.get('numero_item')),
+                'numero_item_cmp': _iv(d.get('numero_item_cmp')),
+                'designation_cmp': _sv(d.get('designation_cmp')),
+                'quantite_cmp': _fv(d.get('quantite_cmp')),
+                'prixbh_cmp': _sv(d.get('prixbh_cmp'), '0'),
+                'prixt_cmp': _sv(d.get('prixt_cmp'), '0'),
+                'remarque_cmp': _sv(d.get('remarque_cmp')),
+                'send_cmp': _bv(d.get('send_cmp')),
+                'm1_cmp': _sv(d.get('m1_cmp')), 'user_id': uid}
+        pk = _upsert(conn, 'item_composition', 'id_cmp', set_cols, vals)
+        return jsonify({'id_cmp': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_mouvementc', methods=['POST'])
+def upsert_mouvementc():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ['date_mc','time_mc','montant','justificatif','numero_util','origine','cf','numero_cf']
+        vals = {'local_id': _iv(d['local_id']),
+                'date_mc': d.get('date_mc'), 'time_mc': d.get('time_mc'),
+                'montant': _sv(d.get('montant'), '0'),
+                'justificatif': _sv(d.get('justificatif')),
+                'numero_util': _iv(d.get('numero_util')),
+                'origine': _sv(d.get('origine')),
+                'cf': _sv(d.get('cf')), 'numero_cf': _iv(d.get('numero_cf')),
+                'user_id': uid}
+        pk = _upsert(conn, 'mouvementc', 'numero_mc', set_cols, vals)
+        return jsonify({'numero_mc': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_observation', methods=['POST'])
+def upsert_observation():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        pk = _upsert(conn, 'observation', 'numero_obs', ['numero_comande','doc','texts'],
+            {'local_id': _iv(d['local_id']),
+             'numero_comande': _iv(d.get('numero_comande')),
+             'doc': _sv(d.get('doc')), 'texts': _sv(d.get('texts')),
+             'user_id': uid})
+        return jsonify({'numero_obs': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
+@app.route('/upsert_tmp', methods=['POST'])
+def upsert_tmp():
+    uid = request.headers.get('X-User-ID')
+    if not uid: return jsonify({'error': 'X-User-ID requis'}), 401
+    d = request.get_json()
+    if d.get('local_id') is None: return jsonify({'error': 'local_id requis'}), 400
+    conn = get_conn()
+    try:
+        set_cols = ([f'v{i}' for i in range(1,11)] +
+                    [f'f{i}' for i in range(1,11)] +
+                    [f'r{i}' for i in range(1,11)])
+        vals = {'local_id': _iv(d['local_id']), 'user_id': uid}
+        vals.update({c: _sv(d.get(c)) for c in set_cols})
+        pk = _upsert(conn, 'tmp', 'n', set_cols, vals)
+        return jsonify({'n': pk}), 200
+    except Exception as e: conn.rollback(); return jsonify({'error': str(e)}), 500
+    finally: conn.close()
+
+
 # Lancer l'application
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
