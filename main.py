@@ -3339,482 +3339,392 @@ def liste_produits_par_categorie():
         return jsonify({'erreur': str(e)}), 500
 
 
-# ── Helpers de conversion ────────────────────────────────────────────────────
+@app.route('/migrate_receive', methods=['POST'])
+def migrate_receive():
 
-def s(v, d=''):
-    """String sécurisé"""
-    if v is None: return d
-    return str(v).strip()
-
-def n(v, d=''):
-    """String numérique normalisé : virgule → point (ex: '12,50' → '12.50')"""
-    if v is None: return d
-    return str(v).strip().replace(',', '.')
-
-def iv(v, d=0):
-    """Int sécurisé"""
-    if v is None: return d
-    if isinstance(v, int): return v
-    try: return int(float(str(v).replace(',', '.').strip()))
-    except: return d
-
-def fv(v, d=0.0):
-    """Float sécurisé — gère virgule européenne, espaces, milliers"""
-    if v is None: return d
-    if isinstance(v, (int, float)): return float(v)
-    try:
-        x = re.sub(r'[^\d.,-]', '', str(v).strip())
-        x = x.replace(',', '.')
-        parts = x.split('.')
-        if len(parts) > 2:
-            x = parts[0] + '.' + ''.join(parts[1:])
-        return float(x) if x else d
-    except: return d
-
-def bv(v, d=False):
-    """Bool sécurisé"""
-    if isinstance(v, bool): return v
-    if v is None: return d
-    return str(v).lower().strip() in ('true', '1', 'yes', 'oui', 'vrai', 'on', 't', 'y')
-
-def dv(v):
-    """Date/datetime → string ISO"""
-    if v is None: return None
-    if hasattr(v, 'isoformat'): return v.isoformat()
-    return str(v)
-
-
-# ── Collecte des 20 tables ───────────────────────────────────────────────────
-
-def _collect(cur):
-    """Lit toutes les tables et retourne un dict JSON-sérialisable."""
-    data = {}
-
-    # CATEGORIE
-    cur.execute("SELECT numer_categorie, description_c FROM categorie")
-    data['categorie'] = [
-        {'description_c': s(r['description_c'])}
-        for r in cur.fetchall()
-    ]
-
-    # SALLE
-    cur.execute("SELECT description_s FROM salle")
-    data['salle'] = [
-        {'description_s': s(r['description_s'])}
-        for r in cur.fetchall()
-    ]
-
-    # UTILISATEUR
-    cur.execute("SELECT * FROM utilisateur ORDER BY numero_util")
-    data['utilisateur'] = [{
-        'nom':      s(r.get('nom')),
-        'statue':   s(r.get('statue'), 'emplo'),
-        'password2': s(r.get('password2'), '1234'),
-        **{f'o{j}': bv(r.get(f'o{j}')) for j in range(1, 31)},
-    } for r in cur.fetchall()]
-
-    # TVA
-    cur.execute("SELECT tva FROM tva ORDER BY numero_tva")
-    data['tva'] = [{'tva': iv(r['tva'])} for r in cur.fetchall()]
-
-    # FOURNISSEUR
-    cur.execute("SELECT * FROM fournisseur ORDER BY numero_fou")
-    data['fournisseur'] = [{
-        'reference': s(r.get('reference')), 'nom':     s(r.get('nom')),
-        'adresse':   s(r.get('adresse')),   'post':    s(r.get('post')),
-        'ville':     s(r.get('ville')),     'pays':    s(r.get('pays')),
-        'contact':   s(r.get('contact')),   'tel1':    s(r.get('tel1')),
-        'tel2':      s(r.get('tel2')),      'fax':     s(r.get('fax')),
-        'rem':       n(r.get('rem')),       'banc':    s(r.get('banc')),
-        'idfis':     s(r.get('idfis')),     'ai':      s(r.get('ai')),
-        'nis':       s(r.get('nis')),       'rc':      s(r.get('rc')),
-        'solde':     n(r.get('solde')),
-        'm1': s(r.get('m1')), 'm2': s(r.get('m2')), 'm3': s(r.get('m3')),
-        'm4': s(r.get('m4')), 'm5': s(r.get('m5')),
-        'exonore': bv(r.get('exonore')),
-    } for r in cur.fetchall()]
-
-    # CLIENT
-    cur.execute("SELECT * FROM client ORDER BY numero_clt")
-    data['client'] = [{
-        'reference': s(r.get('reference')), 'nom':     s(r.get('nom')),
-        'adresse':   s(r.get('adresse')),   'post':    s(r.get('post')),
-        'ville':     s(r.get('ville')),     'pays':    s(r.get('pays')),
-        'contact':   s(r.get('contact')),   'tel1':    s(r.get('tel1')),
-        'tel2':      s(r.get('tel2')),      'fax':     s(r.get('fax')),
-        'rem':       n(r.get('rem')),       'catp':    iv(r.get('catp')),
-        'banc':      s(r.get('banc')),      'idfis':   s(r.get('idfis')),
-        'ai':        s(r.get('ai')),        'nis':     s(r.get('nis')),
-        'rc':        s(r.get('rc')),        'solde':   n(r.get('solde')),
-        'smax':      n(r.get('smax')),
-        'm1': s(r.get('m1')), 'm2': s(r.get('m2')), 'm3': s(r.get('m3')),
-        'm4': s(r.get('m4')), 'm5': s(r.get('m5')),
-        'exonore': bv(r.get('exonore')),
-    } for r in cur.fetchall()]
-
-    # TABLES
-    cur.execute('SELECT * FROM "TABLES" ORDER BY numero_table1')
-    data['tables'] = [{
-        'numero_salle':  iv(r.get('numero_salle')),
-        'position_x':   iv(r.get('position_x')),
-        'position_y':   iv(r.get('position_y')),
-        'description_t': s(r.get('description_t')),
-        'etat':          s(r.get('etat')),
-    } for r in cur.fetchall()]
-
-    # ITEM
-    cur.execute("SELECT * FROM item ORDER BY numero_item")
-    data['item'] = [{
-        'local_id':          iv(r.get('numero_item')),   # ← pour mapping codebar
-        'numero_categorie':  iv(r.get('numero_categorie')),
-        'ref':               s(r.get('ref')),
-        'designation':       s(r.get('designation'), 'Article'),
-        'prix':              n(r.get('prix')),
-        'prixb':             n(r.get('prixb')),
-        'prixvh':            n(r.get('prixvh')),
-        'qte':               fv(r.get('qte')),
-        'qtea':              iv(r.get('qtea')),
-        'model':             s(r.get('model')),
-        'remarque':          s(r.get('remarque')),
-        'numero_fou':        iv(r.get('numero_fou')),
-        'tva':               iv(r.get('tva')),
-        'bar':               s(r.get('bar')),
-        'prix2':             n(r.get('prix2')),
-        'prix3':             n(r.get('prix3')),
-        'prix4':             n(r.get('prix4')),
-        'prix5':             n(r.get('prix5')),
-        'tvav':              n(r.get('tvav')),
-        'prixba':            n(r.get('prixba')),
-        'exp':               dv(r.get('exp')),
-        'debut':             dv(r.get('debut')),
-        'fin':               dv(r.get('fin')),
-        'promo':             n(r.get('promo')),
-        'm1': s(r.get('m1')), 'm2': s(r.get('m2')), 'm3': s(r.get('m3')),
-        'm4': s(r.get('m4')), 'm5': s(r.get('m5')),
-        'disponible':        bv(r.get('disponible'), True),
-        'gere':              bv(r.get('gere')),
-        'temp_fabrication':  iv(r.get('temp_fabrication')),
-    } for r in cur.fetchall()]
-
-    # CODEBAR
-    cur.execute("SELECT bar, bar2 FROM codebar ORDER BY n")
-    data['codebar'] = [
-        {'bar_local_id': iv(r['bar']), 'bar2': s(r['bar2'])}  # bar = numero_item local
-        for r in cur.fetchall()
-    ]
-
-    # MOUVEMENT
-    cur.execute("SELECT * FROM mouvement ORDER BY numero_mouvement")
-    data['mouvement'] = [{
-        'date_m':      dv(r.get('date_m')),
-        'etat_m':      s(r.get('etat_m')),
-        'numero_four': iv(r.get('numero_four')),
-        'refdoc':      s(r.get('refdoc')),
-        'vers':        s(r.get('vers')),
-        'nature':      s(r.get('nature')),
-        'connection1': iv(r.get('connection1')),
-        'numero_util': iv(r.get('numero_util')),
-        'cheque':      s(r.get('cheque')),
-    } for r in cur.fetchall()]
-
-    # CLOTURE
-    cur.execute("SELECT * FROM cloture ORDER BY numero_cloture")
-    data['cloture'] = [{
-        'date_cloture': dv(r.get('date_cloture')),
-        'prelevement':  n(r.get('prelevement')),
-        'fondcaisse':   n(r.get('fondcaisse')),
-    } for r in cur.fetchall()]
-
-    # COMANDE
-    cur.execute("SELECT * FROM comande ORDER BY numero_comande")
-    data['comande'] = [{
-        'numero_table': iv(r.get('numero_table')),
-        'date_comande': dv(r.get('date_comande')),
-        'etat_c':       s(r.get('etat_c')),
-        'connection1':  iv(r.get('connection1')),
-        'numero_util':  iv(r.get('numero_util')),
-        'nature':       s(r.get('nature')),
-        'compteur':     iv(r.get('compteur')),
-        'cheque':       s(r.get('cheque')),
-    } for r in cur.fetchall()]
-
-    # ATTACHE
-    cur.execute("SELECT * FROM attache ORDER BY numero_attache")
-    data['attache'] = [{
-        'numero_comande': iv(r.get('numero_comande')),
-        'numero_item':    iv(r.get('numero_item')),
-        'quantite':       fv(r.get('quantite')),
-        'prixt':          n(r.get('prixt')),
-        'remarque':       s(r.get('remarque')),
-        'bnfc':           n(r.get('bnfc')),
-        'marge':          n(r.get('marge')),
-        'prixbh':         n(r.get('prixbh')),
-        'achatfx':        n(r.get('achatfx')),
-        'send':           bv(r.get('send')),
-    } for r in cur.fetchall()]
-
-    # ATTACHE2
-    cur.execute("SELECT * FROM attache2 ORDER BY numero_attache2")
-    data['attache2'] = [{
-        'numero_item':      iv(r.get('numero_item')),
-        'numero_mouvement': iv(r.get('numero_mouvement')),
-        'qtea':  fv(r.get('qtea')),
-        'nqte':  fv(r.get('nqte')),
-        'nprix': n(r.get('nprix')),
-        'pump':  n(r.get('pump')),
-        'send':  bv(r.get('send')),
-    } for r in cur.fetchall()]
-
-    # ATTACHETMP
-    cur.execute("SELECT * FROM attachetmp ORDER BY numero_attache")
-    data['attachetmp'] = [{
-        'numero_comande': iv(r.get('numero_comande')),
-        'numero_item':    iv(r.get('numero_item')),
-        'quantite':       fv(r.get('quantite')),
-        'prixt':          n(r.get('prixt')),
-        'remarque':       s(r.get('remarque')),
-        'bnfc':           n(r.get('bnfc')),
-        'marge':          n(r.get('marge')),
-        'prixbh':         n(r.get('prixbh')),
-        'achatfx':        n(r.get('achatfx')),
-        'send':           bv(r.get('send')),
-    } for r in cur.fetchall()]
-
-    # ENCAISSE
-    cur.execute("SELECT * FROM encaisse ORDER BY numero_encaisse")
-    data['encaisse'] = [{
-        'apaye':          n(r.get('apaye')),
-        'reglement':      s(r.get('reglement')),
-        'tva':            n(r.get('tva')),
-        'ht':             n(r.get('ht')),
-        'numero_comande': iv(r.get('numero_comande')),
-        'numero_cloture': iv(r.get('numero_cloture')),
-        'time_enc':       dv(r.get('time_enc')),
-        'origine':        s(r.get('origine')),
-        'solder':         n(r.get('solder')),
-    } for r in cur.fetchall()]
-
-    # ITEM_COMPOSITION
-    cur.execute("SELECT * FROM item_composition ORDER BY id_cmp")
-    data['item_composition'] = [{
-        'numero_item':     iv(r.get('numero_item')),
-        'numero_item_cmp': iv(r.get('numero_item_cmp')),
-        'designation_cmp': s(r.get('designation_cmp')),
-        'quantite_cmp':    fv(r.get('quantite_cmp')),
-        'prixbh_cmp':      n(r.get('prixbh_cmp')),
-        'prixt_cmp':       n(r.get('prixt_cmp')),
-        'remarque_cmp':    s(r.get('remarque_cmp')),
-        'send_cmp':        bv(r.get('send_cmp')),
-        'm1_cmp':          s(r.get('m1_cmp')),
-    } for r in cur.fetchall()]
-
-    # MOUVEMENTC
-    cur.execute("SELECT * FROM mouvementc ORDER BY numero_mc")
-    data['mouvementc'] = [{
-        'date_mc':      dv(r.get('date_mc')),
-        'time_mc':      dv(r.get('time_mc')),
-        'montant':      n(r.get('montant')),
-        'justificatif': s(r.get('justificatif')),
-        'numero_util':  iv(r.get('numero_util')),
-        'origine':      s(r.get('origine')),
-        'cf':           s(r.get('cf')),
-        'numero_cf':    iv(r.get('numero_cf')),
-    } for r in cur.fetchall()]
-
-    # OBSERVATION
-    cur.execute("SELECT * FROM observation ORDER BY numero_obs")
-    data['observation'] = [{
-        'numero_comande': iv(r.get('numero_comande')),
-        'doc':            s(r.get('doc')),
-        'texts':          s(r.get('texts')),
-    } for r in cur.fetchall()]
-
-    # TMP
-    cur.execute("SELECT * FROM tmp ORDER BY n")
-    data['tmp'] = [{
-        **{f'v{j}': s(r.get(f'v{j}')) for j in range(1, 11)},
-        **{f'f{j}': s(r.get(f'f{j}')) for j in range(1, 11)},
-        **{f'r{j}': s(r.get(f'r{j}')) for j in range(1, 11)},
-    } for r in cur.fetchall()]
-
-    return data
-
-
-# ── Endpoint /migrate_to_cloud ───────────────────────────────────────────────
-
-@app.route('/migrate_to_cloud', methods=['POST'])
-def migrate_to_cloud():
-    req       = request.get_json() or {}
-    user_id   = req.get('user_id')
-    cloud_url = req.get('cloud_url', CLOUD_API_URL).rstrip('/')
+    req     = request.get_json(silent=True) or {}
+    user_id = req.get('user_id') or request.headers.get('X-User-ID')
+    data    = req.get('data', {})
 
     if not user_id:
         return jsonify({'error': 'user_id requis'}), 400
+    if not data:
+        return jsonify({'error': 'data vide'}), 400
 
-    pg_conn = None
-    try:
-        pg_conn = get_conn()
-        cur     = pg_conn.cursor(cursor_factory=RealDictCursor)
+    clear = req.get('clear', True)   # False pour les chunks suivants
 
-        logger.info(f"[migrate_to_cloud] Collecte pour user_id={user_id}")
-        all_data = _collect(cur)
+    # ── Helpers de conversion ────────────────────────────────────────────────
+    def s(v, d=''):
+        """String sécurisé"""
+        if v is None: return d
+        return str(v).strip()
 
-        counts = {k: len(v) for k, v in all_data.items()}
-        total  = sum(counts.values())
-        logger.info(f"[migrate_to_cloud] {total} enregistrements collectés: {counts}")
+    def i(v, d=0):
+        """Int sécurisé"""
+        if v is None: return d
+        if isinstance(v, int): return v
+        try: return int(float(str(v).replace(',', '.').strip()))
+        except: return d
 
-        # ── Stratégie : tables lourdes envoyées par chunks, légères en une fois ──
-        CHUNK_SIZE  = 150   # petit chunk — Render timeout < 30s
-        HEAVY_TABLES = {'item', 'attache', 'attache2', 'attachetmp',
-                        'encaisse', 'comande', 'mouvement', 'mouvementc',
-                        'observation', 'codebar', 'item_composition'}
-
-        cloud_results = {}
-        total_inserted = 0
-
-        def post_chunk(payload, label, retries=3):
-            import time
-            for attempt in range(retries):
-                try:
-                    r = http_requests.post(
-                        f"{cloud_url}/migrate_receive",
-                        json=payload,
-                        headers={'Content-Type': 'application/json', 'X-User-ID': user_id},
-                        timeout=60,
-                    )
-                    if r.status_code == 200:
-                        return r.json()
-                    if r.status_code in (502, 503, 504) and attempt < retries - 1:
-                        wait = (attempt + 1) * 3
-                        logger.warning(f"{label} HTTP {r.status_code} retry {attempt+1} dans {wait}s")
-                        time.sleep(wait)
-                        continue
-                    raise Exception(f"{label} -> HTTP {r.status_code}: {r.text[:300]}")
-                except http_requests.exceptions.Timeout:
-                    if attempt < retries - 1:
-                        logger.warning(f"{label} timeout retry {attempt+1}")
-                        time.sleep(3)
-                        continue
-                    raise Exception(f"{label} -> Timeout apres {retries} tentatives")
-            raise Exception(f"{label} -> Echec apres {retries} tentatives")
-
-        # 1re requête : tables légères + effacement (clear=True)
-        light_data = {k: v for k, v in all_data.items() if k not in HEAVY_TABLES}
-        logger.info(f"[migrate_to_cloud] Envoi tables légères + effacement ...")
-        result = post_chunk({'user_id': user_id, 'data': light_data, 'clear': True}, 'tables légères')
-        cloud_results.update(result.get('par_table', {}))
-        total_inserted += result.get('total_inserted', 0)
-
-        # 2e requête : item en chunks (nécessaire pour le mapping codebar)
-        items = all_data.get('item', [])
-        codebarres = all_data.get('codebar', [])
-        if items:
-            logger.info(f"[migrate_to_cloud] Envoi item ({len(items)} lignes) + codebar ({len(codebarres)}) ...")
-            result = post_chunk({
-                'user_id': user_id,
-                'data': {'item': items, 'codebar': codebarres},
-                'clear': False,
-            }, 'item+codebar')
-            cloud_results.update(result.get('par_table', {}))
-            total_inserted += result.get('total_inserted', 0)
-
-        # Requêtes suivantes : autres tables lourdes par chunks
-        for tbl in HEAVY_TABLES - {'item', 'codebar'}:
-            rows = all_data.get(tbl, [])
-            if not rows:
-                continue
-            for idx in range(0, len(rows), CHUNK_SIZE):
-                chunk = rows[idx: idx + CHUNK_SIZE]
-                label = f"{tbl} chunk {idx//CHUNK_SIZE + 1}"
-                logger.info(f"[migrate_to_cloud] {label} ({len(chunk)} lignes)")
-                result = post_chunk({
-                    'user_id': user_id,
-                    'data': {tbl: chunk},
-                    'clear': False,
-                }, label)
-                prev = cloud_results.get(tbl, 0)
-                cloud_results[tbl] = (prev if isinstance(prev, int) else 0) + result.get('total_inserted', 0)
-                total_inserted += result.get('total_inserted', 0)
-
-        logger.info(f"[migrate_to_cloud] Terminé — {total_inserted} lignes insérées")
-        return jsonify({
-            'statut':        'Migration terminée',
-            'user_id':       user_id,
-            'envoye':        counts,
-            'total_envoye':  total,
-            'cloud_result':  {'total_inserted': total_inserted, 'par_table': cloud_results},
-        }), 200
-
-    except Exception as e:
-        logger.error(f"[migrate_to_cloud] ERREUR: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-    finally:
-        if pg_conn:
-            pg_conn.close()
-
-
-# ── Endpoint /migration_status ───────────────────────────────────────────────
-
-@app.route('/migration_status', methods=['GET'])
-def migration_status():
-    cloud_url = request.args.get('cloud_url', CLOUD_API_URL)
-    pg_conn   = None
-    stats     = {}
-
-    tables = [
-        ('categorie',         'categorie'),
-        ('salle',             'salle'),
-        ('fournisseur',       'fournisseur'),
-        ('client',            'client'),
-        ('utilisateur',       'utilisateur'),
-        ('tva',               'tva'),
-        ('"TABLES"',          'tables'),
-        ('item',              'item'),
-        ('codebar',           'codebar'),
-        ('mouvement',         'mouvement'),
-        ('cloture',           'cloture'),
-        ('comande',           'comande'),
-        ('attache',           'attache'),
-        ('attache2',          'attache2'),
-        ('attachetmp',        'attachetmp'),
-        ('encaisse',          'encaisse'),
-        ('item_composition',  'item_composition'),
-        ('mouvementc',        'mouvementc'),
-        ('observation',       'observation'),
-        ('tmp',               'tmp'),
-    ]
-
-    try:
-        pg_conn = get_conn()
-        cur     = pg_conn.cursor()
-        for sql_name, key in tables:
-            try:
-                cur.execute(f"SELECT COUNT(*) FROM {sql_name}")
-                stats[key] = cur.fetchone()[0]
-            except Exception as e:
-                stats[key] = f"ERR: {str(e)[:40]}"
-
-        cloud_ok, cloud_msg = False, ''
+    def f(v, d=0.0):
+        """Float sécurisé — gère virgule européenne et espaces"""
+        if v is None: return d
+        if isinstance(v, (int, float)): return float(v)
         try:
-            r         = http_requests.get(cloud_url, timeout=10)
-            cloud_ok  = r.status_code == 200
-            cloud_msg = r.text[:120]
-        except Exception as ex:
-            cloud_msg = str(ex)
+            x = re.sub(r'[^\d.,-]', '', str(v).strip())
+            x = x.replace(',', '.')
+            parts = x.split('.')
+            if len(parts) > 2:
+                x = parts[0] + '.' + ''.join(parts[1:])
+            return float(x) if x else d
+        except: return d
 
+    def b(v, d=False):
+        """Bool sécurisé"""
+        if isinstance(v, bool): return v
+        if v is None: return d
+        return str(v).lower().strip() in ('true', '1', 'yes', 'oui', 'vrai', 'on', 't', 'y')
+
+    # ── Ouverture connexion ─────────────────────────────────────────────────
+    conn = get_conn()
+    conn.autocommit = False
+    cur  = conn.cursor()
+    results = {}
+
+    try:
+        # ════════════════════════════════════════════════════════════════════
+        # ÉTAPE 1 — EFFACER toutes les données de cet utilisateur
+        # Ordre strict : enfants avant parents (FK)
+        # ════════════════════════════════════════════════════════════════════
+        delete_order = [
+            'observation',
+            'item_composition',
+            'mouvementc',
+            'encaisse',
+            'attachetmp',
+            'attache2',
+            'attache',
+            'comande',
+            'cloture',
+            'mouvement',
+            'codebar',
+            'item',
+            '"TABLES"',
+            'client',
+            'fournisseur',
+            'utilisateur',
+            'tva',
+            'categorie',
+            'salle',
+            'tmp',
+        ]
+        if clear:
+            for tbl in delete_order:
+                cur.execute(f'DELETE FROM {tbl} WHERE user_id = %s', (user_id,))
+            conn.commit()
+            logger.info(f"[migrate_receive] Tables effacées pour user_id={user_id}")
+        else:
+            logger.info(f"[migrate_receive] Mode chunk — pas d'effacement")
+
+        # ════════════════════════════════════════════════════════════════════
+        # ÉTAPE 2 — INSÉRER par table, en batch (executemany)
+        # ════════════════════════════════════════════════════════════════════
+
+        def batch(key, rows, sql, val_fn):
+            """Insère une liste de rows en une seule transaction."""
+            if not rows:
+                results[key] = 0
+                return
+            vals = []
+            for r in rows:
+                try:
+                    vals.append(val_fn(r))
+                except Exception as e:
+                    logger.warning(f"[{key}] val_fn ignorée: {e}")
+            if not vals:
+                results[key] = 0
+                return
+            try:
+                cur.executemany(sql, vals)
+                conn.commit()
+                results[key] = len(vals)
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"[{key}] INSERT erreur: {e}")
+                results[key] = f"ERR: {str(e)[:120]}"
+
+        # ── Niveau 1 — pas de FK vers d'autres tables user ──────────────────
+
+        batch('categorie', data.get('categorie', []),
+            "INSERT INTO categorie (description_c, user_id) VALUES (%s,%s)",
+            lambda r: (s(r.get('description_c')), user_id))
+
+        batch('salle', data.get('salle', []),
+            "INSERT INTO salle (description_s, user_id) VALUES (%s,%s)",
+            lambda r: (s(r.get('description_s')), user_id))
+
+        batch('utilisateur', data.get('utilisateur', []),
+            """INSERT INTO utilisateur
+               (nom,statue,password2,
+                o1,o2,o3,o4,o5,o6,o7,o8,o9,o10,
+                o11,o12,o13,o14,o15,o16,o17,o18,o19,o20,
+                o21,o22,o23,o24,o25,o26,o27,o28,o29,o30,
+                user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('nom')), s(r.get('statue'), 'emplo'), s(r.get('password2'), '1234'),
+                b(r.get('o1')),  b(r.get('o2')),  b(r.get('o3')),  b(r.get('o4')),
+                b(r.get('o5')),  b(r.get('o6')),  b(r.get('o7')),  b(r.get('o8')),
+                b(r.get('o9')),  b(r.get('o10')),
+                b(r.get('o11'), True), b(r.get('o12'), True), b(r.get('o13'), True),
+                b(r.get('o14'), True), b(r.get('o15'), True), b(r.get('o16'), True),
+                b(r.get('o17'), True), b(r.get('o18'), True), b(r.get('o19'), True),
+                b(r.get('o20'), True), b(r.get('o21'), True), b(r.get('o22'), True),
+                b(r.get('o23'), True), b(r.get('o24'), True), b(r.get('o25'), True),
+                b(r.get('o26'), True), b(r.get('o27'), True), b(r.get('o28'), True),
+                b(r.get('o29'), True), b(r.get('o30'), True),
+                user_id))
+
+        batch('tva', data.get('tva', []),
+            "INSERT INTO tva (tva, user_id) VALUES (%s,%s)",
+            lambda r: (i(r.get('tva')), user_id))
+
+        batch('fournisseur', data.get('fournisseur', []),
+            """INSERT INTO fournisseur
+               (reference,nom,adresse,post,ville,pays,contact,tel1,tel2,fax,
+                rem,banc,idfis,ai,nis,rc,solde,m1,m2,m3,m4,m5,exonore,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('reference')), s(r.get('nom')), s(r.get('adresse')),
+                s(r.get('post')),      s(r.get('ville')), s(r.get('pays')),
+                s(r.get('contact')),   s(r.get('tel1')),  s(r.get('tel2')),
+                s(r.get('fax')),       s(r.get('rem')),   s(r.get('banc')),
+                s(r.get('idfis')),     s(r.get('ai')),    s(r.get('nis')),
+                s(r.get('rc')),        s(r.get('solde')),
+                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                s(r.get('m4')), s(r.get('m5')),
+                b(r.get('exonore')), user_id))
+
+        batch('client', data.get('client', []),
+            """INSERT INTO client
+               (reference,nom,adresse,post,ville,pays,contact,tel1,tel2,fax,
+                rem,catp,banc,idfis,ai,nis,rc,solde,smax,m1,m2,m3,m4,m5,exonore,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('reference')), s(r.get('nom')),     s(r.get('adresse')),
+                s(r.get('post')),      s(r.get('ville')),   s(r.get('pays')),
+                s(r.get('contact')),   s(r.get('tel1')),    s(r.get('tel2')),
+                s(r.get('fax')),       s(r.get('rem')),     i(r.get('catp')),
+                s(r.get('banc')),      s(r.get('idfis')),   s(r.get('ai')),
+                s(r.get('nis')),       s(r.get('rc')),      s(r.get('solde')),
+                s(r.get('smax')),
+                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                s(r.get('m4')), s(r.get('m5')),
+                b(r.get('exonore')), user_id))
+
+        # ── Niveau 2 — dépendent de niveau 1 ────────────────────────────────
+
+        batch('"TABLES"', data.get('tables', []),
+            'INSERT INTO "TABLES" (numero_salle,position_x,position_y,description_t,etat,user_id) VALUES (%s,%s,%s,%s,%s,%s)',
+            lambda r: (
+                i(r.get('numero_salle')), i(r.get('position_x')), i(r.get('position_y')),
+                s(r.get('description_t')), s(r.get('etat')), user_id))
+
+        # ITEM — mapping local_id → nouveau numero_item cloud
+        item_id_map = {}
+        for r in data.get('item', []):
+            try:
+                cur.execute("""
+                    INSERT INTO item
+                        (numero_categorie,ref,designation,prix,prixb,prixvh,qte,qtea,
+                         model,remarque,numero_fou,tva,bar,prix2,prix3,prix4,prix5,
+                         tvav,prixba,exp,debut,fin,promo,m1,m2,m3,m4,m5,
+                         disponible,gere,temp_fabrication,user_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING numero_item
+                """, (
+                    i(r.get('numero_categorie')),
+                    s(r.get('ref')),        s(r.get('designation'), 'Article'),
+                    s(r.get('prix')),       s(r.get('prixb')),      s(r.get('prixvh')),
+                    f(r.get('qte')),        i(r.get('qtea')),
+                    s(r.get('model')),      s(r.get('remarque')),
+                    i(r.get('numero_fou')), i(r.get('tva')),        s(r.get('bar')),
+                    s(r.get('prix2')),      s(r.get('prix3')),      s(r.get('prix4')),
+                    s(r.get('prix5')),      s(r.get('tvav')),       s(r.get('prixba')),
+                    r.get('exp'),           r.get('debut'),          r.get('fin'),
+                    s(r.get('promo')),
+                    s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                    s(r.get('m4')), s(r.get('m5')),
+                    b(r.get('disponible'), True), b(r.get('gere')),
+                    i(r.get('temp_fabrication')), user_id))
+                cloud_id = cur.fetchone()[0]
+                local_id = i(r.get('local_id'))
+                if local_id:
+                    item_id_map[local_id] = cloud_id
+            except Exception as e:
+                logger.warning(f"item insert: {e}")
+        conn.commit()
+        results['item'] = len(item_id_map)
+
+        # CODEBAR — bar_local_id traduit vers le nouveau numero_item cloud
+        codebar_vals = []
+        for r in data.get('codebar', []):
+            local_item_id = i(r.get('bar_local_id'))
+            cloud_item_id = item_id_map.get(local_item_id, local_item_id)
+            codebar_vals.append((str(cloud_item_id), s(r.get('bar2')), user_id))
+        if codebar_vals:
+            try:
+                cur.executemany(
+                    "INSERT INTO codebar (bar, bar2, user_id) VALUES (%s,%s,%s)",
+                    codebar_vals)
+                conn.commit()
+                results['codebar'] = len(codebar_vals)
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"codebar insert: {e}")
+                results['codebar'] = f"ERR: {str(e)[:120]}"
+        else:
+            results['codebar'] = 0
+
+        batch('mouvement', data.get('mouvement', []),
+            """INSERT INTO mouvement
+               (date_m,etat_m,numero_four,refdoc,vers,nature,connection1,numero_util,cheque,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                r.get('date_m'),          s(r.get('etat_m')),
+                i(r.get('numero_four')),  s(r.get('refdoc')),
+                s(r.get('vers')),         s(r.get('nature')),
+                i(r.get('connection1')),  i(r.get('numero_util')),
+                s(r.get('cheque')),       user_id))
+
+        batch('cloture', data.get('cloture', []),
+            "INSERT INTO cloture (date_cloture,prelevement,fondcaisse,user_id) VALUES (%s,%s,%s,%s)",
+            lambda r: (
+                r.get('date_cloture'), s(r.get('prelevement')),
+                s(r.get('fondcaisse')), user_id))
+
+        # ── Niveau 3 — dépendent de niveau 2 ────────────────────────────────
+
+        batch('comande', data.get('comande', []),
+            """INSERT INTO comande
+               (numero_table,date_comande,etat_c,connection1,numero_util,nature,compteur,cheque,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_table')),  r.get('date_comande'),
+                s(r.get('etat_c')),        i(r.get('connection1')),
+                i(r.get('numero_util')),   s(r.get('nature')),
+                i(r.get('compteur')),      s(r.get('cheque')), user_id))
+
+        # ── Niveau 4 — dépendent de niveau 3 ────────────────────────────────
+
+        batch('attache', data.get('attache', []),
+            """INSERT INTO attache
+               (numero_comande,numero_item,quantite,prixt,remarque,bnfc,marge,prixbh,achatfx,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_comande')), i(r.get('numero_item')),
+                f(r.get('quantite')),
+                s(r.get('prixt')),   s(r.get('remarque')),
+                s(r.get('bnfc')),    s(r.get('marge')),
+                s(r.get('prixbh')),  s(r.get('achatfx')),
+                b(r.get('send')),    user_id))
+
+        batch('attache2', data.get('attache2', []),
+            """INSERT INTO attache2
+               (numero_item,numero_mouvement,qtea,nqte,nprix,pump,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_item')), i(r.get('numero_mouvement')),
+                f(r.get('qtea')),        f(r.get('nqte')),
+                s(r.get('nprix')),       s(r.get('pump')),
+                b(r.get('send')),        user_id))
+
+        batch('attachetmp', data.get('attachetmp', []),
+            """INSERT INTO attachetmp
+               (numero_comande,numero_item,quantite,prixt,remarque,bnfc,marge,prixbh,achatfx,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_comande')), i(r.get('numero_item')),
+                f(r.get('quantite')),
+                s(r.get('prixt')),   s(r.get('remarque')),
+                s(r.get('bnfc')),    s(r.get('marge')),
+                s(r.get('prixbh')),  s(r.get('achatfx')),
+                b(r.get('send')),    user_id))
+
+        batch('encaisse', data.get('encaisse', []),
+            """INSERT INTO encaisse
+               (apaye,reglement,tva,ht,numero_comande,numero_cloture,time_enc,origine,solder,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('apaye')),   s(r.get('reglement')),
+                s(r.get('tva')),     s(r.get('ht')),
+                i(r.get('numero_comande')), i(r.get('numero_cloture')),
+                r.get('time_enc'),   s(r.get('origine')),
+                s(r.get('solder')),  user_id))
+
+        batch('item_composition', data.get('item_composition', []),
+            """INSERT INTO item_composition
+               (numero_item,numero_item_cmp,designation_cmp,quantite_cmp,
+                prixbh_cmp,prixt_cmp,remarque_cmp,send_cmp,m1_cmp,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_item')),     i(r.get('numero_item_cmp')),
+                s(r.get('designation_cmp')), f(r.get('quantite_cmp')),
+                s(r.get('prixbh_cmp')),      s(r.get('prixt_cmp')),
+                s(r.get('remarque_cmp')),    b(r.get('send_cmp')),
+                s(r.get('m1_cmp')),          user_id))
+
+        batch('mouvementc', data.get('mouvementc', []),
+            """INSERT INTO mouvementc
+               (date_mc,time_mc,montant,justificatif,numero_util,origine,cf,numero_cf,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                r.get('date_mc'),           r.get('time_mc'),
+                s(r.get('montant')),        s(r.get('justificatif')),
+                i(r.get('numero_util')),    s(r.get('origine')),
+                s(r.get('cf')),             i(r.get('numero_cf')),
+                user_id))
+
+        batch('observation', data.get('observation', []),
+            "INSERT INTO observation (numero_comande,doc,texts,user_id) VALUES (%s,%s,%s,%s)",
+            lambda r: (i(r.get('numero_comande')), s(r.get('doc')), s(r.get('texts')), user_id))
+
+        batch('tmp', data.get('tmp', []),
+            """INSERT INTO tmp
+               (v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,
+                f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,
+                r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: tuple(s(r.get(f'v{j}')) for j in range(1, 11)) +
+                      tuple(s(r.get(f'f{j}')) for j in range(1, 11)) +
+                      tuple(s(r.get(f'r{j}')) for j in range(1, 11)) +
+                      (user_id,))
+
+        # ── Résumé ────────────────────────────────────────────────────────────
+        errors  = {k: v for k, v in results.items() if isinstance(v, str)}
+        inserts = {k: v for k, v in results.items() if isinstance(v, int)}
+        total   = sum(inserts.values())
+
+        logger.info(f"[migrate_receive] OK — {total} lignes insérées pour user_id={user_id}")
         return jsonify({
-            'local_stats':     stats,
-            'cloud_reachable': cloud_ok,
-            'cloud_message':   cloud_msg,
-            'cloud_url':       cloud_url,
+            'statut':         'OK',
+            'user_id':        user_id,
+            'total_inserted': total,
+            'par_table':      inserts,
+            'erreurs':        errors,
         }), 200
 
     except Exception as e:
+        conn.rollback()
+        logger.error(f"[migrate_receive] ERREUR: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
     finally:
-        if pg_conn:
-            pg_conn.close()
-
+        cur.close()
+        conn.close()
 
 # Lancer l'application
 if __name__ == '__main__':
