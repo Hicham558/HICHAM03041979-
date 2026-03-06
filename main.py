@@ -10,6 +10,7 @@ import os
 from psycopg2.extras import RealDictCursor
 from psycopg2 import Error as Psycopg2Error
 from datetime import datetime,timedelta,date,time
+import re
 
 
 app = Flask(__name__)
@@ -3336,6 +3337,360 @@ def liste_produits_par_categorie():
             cur.close()
             conn.close()
         return jsonify({'erreur': str(e)}), 500
+
+@app.route('/migrate_receive', methods=['POST'])
+def migrate_receive():
+
+    req     = request.get_json(silent=True) or {}
+    user_id = req.get('user_id') or request.headers.get('X-User-ID')
+    data    = req.get('data', {})
+
+    if not user_id:
+        return jsonify({'error': 'user_id requis'}), 400
+    if not data:
+        return jsonify({'error': 'data vide'}), 400
+
+    # ── Helpers de conversion ────────────────────────────────────────────────
+    def s(v, d=''):
+        """String sécurisé"""
+        if v is None: return d
+        return str(v).strip()
+
+    def i(v, d=0):
+        """Int sécurisé"""
+        if v is None: return d
+        if isinstance(v, int): return v
+        try: return int(float(str(v).replace(',', '.').strip()))
+        except: return d
+
+    def f(v, d=0.0):
+        """Float sécurisé — gère virgule européenne et espaces"""
+        if v is None: return d
+        if isinstance(v, (int, float)): return float(v)
+        try:
+            x = re.sub(r'[^\d.,-]', '', str(v).strip())
+            x = x.replace(',', '.')
+            parts = x.split('.')
+            if len(parts) > 2:
+                x = parts[0] + '.' + ''.join(parts[1:])
+            return float(x) if x else d
+        except: return d
+
+    def b(v, d=False):
+        """Bool sécurisé"""
+        if isinstance(v, bool): return v
+        if v is None: return d
+        return str(v).lower().strip() in ('true', '1', 'yes', 'oui', 'vrai', 'on', 't', 'y')
+
+    # ── Ouverture connexion ─────────────────────────────────────────────────
+    conn = get_conn()
+    conn.autocommit = False
+    cur  = conn.cursor()
+    results = {}
+
+    try:
+        # ════════════════════════════════════════════════════════════════════
+        # ÉTAPE 1 — EFFACER toutes les données de cet utilisateur
+        # Ordre strict : enfants avant parents (FK)
+        # ════════════════════════════════════════════════════════════════════
+        delete_order = [
+            'observation',
+            'item_composition',
+            'mouvementc',
+            'encaisse',
+            'attachetmp',
+            'attache2',
+            'attache',
+            'comande',
+            'cloture',
+            'mouvement',
+            'codebar',
+            'item',
+            '"TABLES"',
+            'client',
+            'fournisseur',
+            'utilisateur',
+            'tva',
+            'categorie',
+            'salle',
+            'tmp',
+        ]
+        for tbl in delete_order:
+            cur.execute(f'DELETE FROM {tbl} WHERE user_id = %s', (user_id,))
+
+        conn.commit()
+        logger.info(f"[migrate_receive] Tables effacées pour user_id={user_id}")
+
+        # ════════════════════════════════════════════════════════════════════
+        # ÉTAPE 2 — INSÉRER par table, en batch (executemany)
+        # ════════════════════════════════════════════════════════════════════
+
+        def batch(key, rows, sql, val_fn):
+            """Insère une liste de rows en une seule transaction."""
+            if not rows:
+                results[key] = 0
+                return
+            vals = []
+            for r in rows:
+                try:
+                    vals.append(val_fn(r))
+                except Exception as e:
+                    logger.warning(f"[{key}] val_fn ignorée: {e}")
+            if not vals:
+                results[key] = 0
+                return
+            try:
+                cur.executemany(sql, vals)
+                conn.commit()
+                results[key] = len(vals)
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"[{key}] INSERT erreur: {e}")
+                results[key] = f"ERR: {str(e)[:120]}"
+
+        # ── Niveau 1 — pas de FK vers d'autres tables user ──────────────────
+
+        batch('categorie', data.get('categorie', []),
+            "INSERT INTO categorie (description_c, user_id) VALUES (%s,%s)",
+            lambda r: (s(r.get('description_c')), user_id))
+
+        batch('salle', data.get('salle', []),
+            "INSERT INTO salle (description_s, user_id) VALUES (%s,%s)",
+            lambda r: (s(r.get('description_s')), user_id))
+
+        batch('utilisateur', data.get('utilisateur', []),
+            """INSERT INTO utilisateur
+               (nom,statue,password2,
+                o1,o2,o3,o4,o5,o6,o7,o8,o9,o10,
+                o11,o12,o13,o14,o15,o16,o17,o18,o19,o20,
+                o21,o22,o23,o24,o25,o26,o27,o28,o29,o30,
+                user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('nom')), s(r.get('statue'), 'emplo'), s(r.get('password2'), '1234'),
+                b(r.get('o1')),  b(r.get('o2')),  b(r.get('o3')),  b(r.get('o4')),
+                b(r.get('o5')),  b(r.get('o6')),  b(r.get('o7')),  b(r.get('o8')),
+                b(r.get('o9')),  b(r.get('o10')),
+                b(r.get('o11'), True), b(r.get('o12'), True), b(r.get('o13'), True),
+                b(r.get('o14'), True), b(r.get('o15'), True), b(r.get('o16'), True),
+                b(r.get('o17'), True), b(r.get('o18'), True), b(r.get('o19'), True),
+                b(r.get('o20'), True), b(r.get('o21'), True), b(r.get('o22'), True),
+                b(r.get('o23'), True), b(r.get('o24'), True), b(r.get('o25'), True),
+                b(r.get('o26'), True), b(r.get('o27'), True), b(r.get('o28'), True),
+                b(r.get('o29'), True), b(r.get('o30'), True),
+                user_id))
+
+        batch('tva', data.get('tva', []),
+            "INSERT INTO tva (tva, user_id) VALUES (%s,%s)",
+            lambda r: (i(r.get('tva')), user_id))
+
+        batch('fournisseur', data.get('fournisseur', []),
+            """INSERT INTO fournisseur
+               (reference,nom,adresse,post,ville,pays,contact,tel1,tel2,fax,
+                rem,banc,idfis,ai,nis,rc,solde,m1,m2,m3,m4,m5,exonore,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('reference')), s(r.get('nom')), s(r.get('adresse')),
+                s(r.get('post')),      s(r.get('ville')), s(r.get('pays')),
+                s(r.get('contact')),   s(r.get('tel1')),  s(r.get('tel2')),
+                s(r.get('fax')),       s(r.get('rem')),   s(r.get('banc')),
+                s(r.get('idfis')),     s(r.get('ai')),    s(r.get('nis')),
+                s(r.get('rc')),        s(r.get('solde')),
+                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                s(r.get('m4')), s(r.get('m5')),
+                b(r.get('exonore')), user_id))
+
+        batch('client', data.get('client', []),
+            """INSERT INTO client
+               (reference,nom,adresse,post,ville,pays,contact,tel1,tel2,fax,
+                rem,catp,banc,idfis,ai,nis,rc,solde,smax,m1,m2,m3,m4,m5,exonore,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('reference')), s(r.get('nom')),     s(r.get('adresse')),
+                s(r.get('post')),      s(r.get('ville')),   s(r.get('pays')),
+                s(r.get('contact')),   s(r.get('tel1')),    s(r.get('tel2')),
+                s(r.get('fax')),       s(r.get('rem')),     i(r.get('catp')),
+                s(r.get('banc')),      s(r.get('idfis')),   s(r.get('ai')),
+                s(r.get('nis')),       s(r.get('rc')),      s(r.get('solde')),
+                s(r.get('smax')),
+                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                s(r.get('m4')), s(r.get('m5')),
+                b(r.get('exonore')), user_id))
+
+        # ── Niveau 2 — dépendent de niveau 1 ────────────────────────────────
+
+        batch('"TABLES"', data.get('tables', []),
+            'INSERT INTO "TABLES" (numero_salle,position_x,position_y,description_t,etat,user_id) VALUES (%s,%s,%s,%s,%s,%s)',
+            lambda r: (
+                i(r.get('numero_salle')), i(r.get('position_x')), i(r.get('position_y')),
+                s(r.get('description_t')), s(r.get('etat')), user_id))
+
+        batch('item', data.get('item', []),
+            """INSERT INTO item
+               (numero_categorie,ref,designation,prix,prixb,prixvh,qte,qtea,
+                model,remarque,numero_fou,tva,bar,prix2,prix3,prix4,prix5,
+                tvav,prixba,exp,debut,fin,promo,m1,m2,m3,m4,m5,
+                disponible,gere,temp_fabrication,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_categorie')),
+                s(r.get('ref')),         s(r.get('designation'), 'Article'),
+                s(r.get('prix')),        s(r.get('prixb')),       s(r.get('prixvh')),
+                f(r.get('qte')),         i(r.get('qtea')),
+                s(r.get('model')),       s(r.get('remarque')),
+                i(r.get('numero_fou')),  i(r.get('tva')),         s(r.get('bar')),
+                s(r.get('prix2')),       s(r.get('prix3')),       s(r.get('prix4')),
+                s(r.get('prix5')),       s(r.get('tvav')),        s(r.get('prixba')),
+                r.get('exp'),            r.get('debut'),           r.get('fin'),
+                s(r.get('promo')),
+                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                s(r.get('m4')), s(r.get('m5')),
+                b(r.get('disponible'), True), b(r.get('gere')),
+                i(r.get('temp_fabrication')), user_id))
+
+        batch('codebar', data.get('codebar', []),
+            "INSERT INTO codebar (bar, bar2, user_id) VALUES (%s,%s,%s)",
+            lambda r: (s(r.get('bar')), s(r.get('bar2')), user_id))
+
+        batch('mouvement', data.get('mouvement', []),
+            """INSERT INTO mouvement
+               (date_m,etat_m,numero_four,refdoc,vers,nature,connection1,numero_util,cheque,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                r.get('date_m'),          s(r.get('etat_m')),
+                i(r.get('numero_four')),  s(r.get('refdoc')),
+                s(r.get('vers')),         s(r.get('nature')),
+                i(r.get('connection1')),  i(r.get('numero_util')),
+                s(r.get('cheque')),       user_id))
+
+        batch('cloture', data.get('cloture', []),
+            "INSERT INTO cloture (date_cloture,prelevement,fondcaisse,user_id) VALUES (%s,%s,%s,%s)",
+            lambda r: (
+                r.get('date_cloture'), s(r.get('prelevement')),
+                s(r.get('fondcaisse')), user_id))
+
+        # ── Niveau 3 — dépendent de niveau 2 ────────────────────────────────
+
+        batch('comande', data.get('comande', []),
+            """INSERT INTO comande
+               (numero_table,date_comande,etat_c,connection1,numero_util,nature,compteur,cheque,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_table')),  r.get('date_comande'),
+                s(r.get('etat_c')),        i(r.get('connection1')),
+                i(r.get('numero_util')),   s(r.get('nature')),
+                i(r.get('compteur')),      s(r.get('cheque')), user_id))
+
+        # ── Niveau 4 — dépendent de niveau 3 ────────────────────────────────
+
+        batch('attache', data.get('attache', []),
+            """INSERT INTO attache
+               (numero_comande,numero_item,quantite,prixt,remarque,bnfc,marge,prixbh,achatfx,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_comande')), i(r.get('numero_item')),
+                f(r.get('quantite')),
+                s(r.get('prixt')),   s(r.get('remarque')),
+                s(r.get('bnfc')),    s(r.get('marge')),
+                s(r.get('prixbh')),  s(r.get('achatfx')),
+                b(r.get('send')),    user_id))
+
+        batch('attache2', data.get('attache2', []),
+            """INSERT INTO attache2
+               (numero_item,numero_mouvement,qtea,nqte,nprix,pump,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_item')), i(r.get('numero_mouvement')),
+                f(r.get('qtea')),        f(r.get('nqte')),
+                s(r.get('nprix')),       s(r.get('pump')),
+                b(r.get('send')),        user_id))
+
+        batch('attachetmp', data.get('attachetmp', []),
+            """INSERT INTO attachetmp
+               (numero_comande,numero_item,quantite,prixt,remarque,bnfc,marge,prixbh,achatfx,send,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_comande')), i(r.get('numero_item')),
+                f(r.get('quantite')),
+                s(r.get('prixt')),   s(r.get('remarque')),
+                s(r.get('bnfc')),    s(r.get('marge')),
+                s(r.get('prixbh')),  s(r.get('achatfx')),
+                b(r.get('send')),    user_id))
+
+        batch('encaisse', data.get('encaisse', []),
+            """INSERT INTO encaisse
+               (apaye,reglement,tva,ht,numero_comande,numero_cloture,time_enc,origine,solder,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                s(r.get('apaye')),   s(r.get('reglement')),
+                s(r.get('tva')),     s(r.get('ht')),
+                i(r.get('numero_comande')), i(r.get('numero_cloture')),
+                r.get('time_enc'),   s(r.get('origine')),
+                s(r.get('solder')),  user_id))
+
+        batch('item_composition', data.get('item_composition', []),
+            """INSERT INTO item_composition
+               (numero_item,numero_item_cmp,designation_cmp,quantite_cmp,
+                prixbh_cmp,prixt_cmp,remarque_cmp,send_cmp,m1_cmp,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                i(r.get('numero_item')),     i(r.get('numero_item_cmp')),
+                s(r.get('designation_cmp')), f(r.get('quantite_cmp')),
+                s(r.get('prixbh_cmp')),      s(r.get('prixt_cmp')),
+                s(r.get('remarque_cmp')),    b(r.get('send_cmp')),
+                s(r.get('m1_cmp')),          user_id))
+
+        batch('mouvementc', data.get('mouvementc', []),
+            """INSERT INTO mouvementc
+               (date_mc,time_mc,montant,justificatif,numero_util,origine,cf,numero_cf,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: (
+                r.get('date_mc'),           r.get('time_mc'),
+                s(r.get('montant')),        s(r.get('justificatif')),
+                i(r.get('numero_util')),    s(r.get('origine')),
+                s(r.get('cf')),             i(r.get('numero_cf')),
+                user_id))
+
+        batch('observation', data.get('observation', []),
+            "INSERT INTO observation (numero_comande,doc,texts,user_id) VALUES (%s,%s,%s,%s)",
+            lambda r: (i(r.get('numero_comande')), s(r.get('doc')), s(r.get('texts')), user_id))
+
+        batch('tmp', data.get('tmp', []),
+            """INSERT INTO tmp
+               (v1,v2,v3,v4,v5,v6,v7,v8,v9,v10,
+                f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,
+                r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,user_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            lambda r: tuple(s(r.get(f'v{j}')) for j in range(1, 11)) +
+                      tuple(s(r.get(f'f{j}')) for j in range(1, 11)) +
+                      tuple(s(r.get(f'r{j}')) for j in range(1, 11)) +
+                      (user_id,))
+
+        # ── Résumé ────────────────────────────────────────────────────────────
+        errors  = {k: v for k, v in results.items() if isinstance(v, str)}
+        inserts = {k: v for k, v in results.items() if isinstance(v, int)}
+        total   = sum(inserts.values())
+
+        logger.info(f"[migrate_receive] OK — {total} lignes insérées pour user_id={user_id}")
+        return jsonify({
+            'statut':         'OK',
+            'user_id':        user_id,
+            'total_inserted': total,
+            'par_table':      inserts,
+            'erreurs':        errors,
+        }), 200
+
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"[migrate_receive] ERREUR: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()        
 
 # Lancer l'application
 if __name__ == '__main__':
