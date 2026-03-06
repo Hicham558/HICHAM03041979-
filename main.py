@@ -3527,32 +3527,61 @@ def migrate_receive():
                 i(r.get('numero_salle')), i(r.get('position_x')), i(r.get('position_y')),
                 s(r.get('description_t')), s(r.get('etat')), user_id))
 
-        batch('item', data.get('item', []),
-            """INSERT INTO item
-               (numero_categorie,ref,designation,prix,prixb,prixvh,qte,qtea,
-                model,remarque,numero_fou,tva,bar,prix2,prix3,prix4,prix5,
-                tvav,prixba,exp,debut,fin,promo,m1,m2,m3,m4,m5,
-                disponible,gere,temp_fabrication,user_id)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-            lambda r: (
-                i(r.get('numero_categorie')),
-                s(r.get('ref')),         s(r.get('designation'), 'Article'),
-                s(r.get('prix')),        s(r.get('prixb')),       s(r.get('prixvh')),
-                f(r.get('qte')),         i(r.get('qtea')),
-                s(r.get('model')),       s(r.get('remarque')),
-                i(r.get('numero_fou')),  i(r.get('tva')),         s(r.get('bar')),
-                s(r.get('prix2')),       s(r.get('prix3')),       s(r.get('prix4')),
-                s(r.get('prix5')),       s(r.get('tvav')),        s(r.get('prixba')),
-                r.get('exp'),            r.get('debut'),           r.get('fin'),
-                s(r.get('promo')),
-                s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
-                s(r.get('m4')), s(r.get('m5')),
-                b(r.get('disponible'), True), b(r.get('gere')),
-                i(r.get('temp_fabrication')), user_id))
+        # ITEM — mapping local_id → nouveau numero_item cloud
+        item_id_map = {}
+        for r in data.get('item', []):
+            try:
+                cur.execute("""
+                    INSERT INTO item
+                        (numero_categorie,ref,designation,prix,prixb,prixvh,qte,qtea,
+                         model,remarque,numero_fou,tva,bar,prix2,prix3,prix4,prix5,
+                         tvav,prixba,exp,debut,fin,promo,m1,m2,m3,m4,m5,
+                         disponible,gere,temp_fabrication,user_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING numero_item
+                """, (
+                    i(r.get('numero_categorie')),
+                    s(r.get('ref')),        s(r.get('designation'), 'Article'),
+                    s(r.get('prix')),       s(r.get('prixb')),      s(r.get('prixvh')),
+                    f(r.get('qte')),        i(r.get('qtea')),
+                    s(r.get('model')),      s(r.get('remarque')),
+                    i(r.get('numero_fou')), i(r.get('tva')),        s(r.get('bar')),
+                    s(r.get('prix2')),      s(r.get('prix3')),      s(r.get('prix4')),
+                    s(r.get('prix5')),      s(r.get('tvav')),       s(r.get('prixba')),
+                    r.get('exp'),           r.get('debut'),          r.get('fin'),
+                    s(r.get('promo')),
+                    s(r.get('m1')), s(r.get('m2')), s(r.get('m3')),
+                    s(r.get('m4')), s(r.get('m5')),
+                    b(r.get('disponible'), True), b(r.get('gere')),
+                    i(r.get('temp_fabrication')), user_id))
+                cloud_id = cur.fetchone()[0]
+                local_id = i(r.get('local_id'))
+                if local_id:
+                    item_id_map[local_id] = cloud_id
+            except Exception as e:
+                logger.warning(f"item insert: {e}")
+        conn.commit()
+        results['item'] = len(item_id_map)
 
-        batch('codebar', data.get('codebar', []),
-            "INSERT INTO codebar (bar, bar2, user_id) VALUES (%s,%s,%s)",
-            lambda r: (s(r.get('bar')), s(r.get('bar2')), user_id))
+        # CODEBAR — bar_local_id traduit vers le nouveau numero_item cloud
+        codebar_vals = []
+        for r in data.get('codebar', []):
+            local_item_id = i(r.get('bar_local_id'))
+            cloud_item_id = item_id_map.get(local_item_id, local_item_id)
+            codebar_vals.append((str(cloud_item_id), s(r.get('bar2')), user_id))
+        if codebar_vals:
+            try:
+                cur.executemany(
+                    "INSERT INTO codebar (bar, bar2, user_id) VALUES (%s,%s,%s)",
+                    codebar_vals)
+                conn.commit()
+                results['codebar'] = len(codebar_vals)
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"codebar insert: {e}")
+                results['codebar'] = f"ERR: {str(e)[:120]}"
+        else:
+            results['codebar'] = 0
 
         batch('mouvement', data.get('mouvement', []),
             """INSERT INTO mouvement
@@ -3690,7 +3719,7 @@ def migrate_receive():
         return jsonify({'error': str(e)}), 500
     finally:
         cur.close()
-        conn.close()        
+        conn.close()       
 
 # Lancer l'application
 if __name__ == '__main__':
