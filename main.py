@@ -3338,6 +3338,7 @@ def liste_produits_par_categorie():
             conn.close()
         return jsonify({'erreur': str(e)}), 500
 
+
 @app.route('/migrate_receive', methods=['POST'])
 def migrate_receive():
 
@@ -3349,6 +3350,8 @@ def migrate_receive():
         return jsonify({'error': 'user_id requis'}), 400
     if not data:
         return jsonify({'error': 'data vide'}), 400
+
+    clear = req.get('clear', True)   # False pour les chunks suivants
 
     # ── Helpers de conversion ────────────────────────────────────────────────
     def s(v, d=''):
@@ -3415,11 +3418,13 @@ def migrate_receive():
             'salle',
             'tmp',
         ]
-        for tbl in delete_order:
-            cur.execute(f'DELETE FROM {tbl} WHERE user_id = %s', (user_id,))
-
-        conn.commit()
-        logger.info(f"[migrate_receive] Tables effacées pour user_id={user_id}")
+        if clear:
+            for tbl in delete_order:
+                cur.execute(f'DELETE FROM {tbl} WHERE user_id = %s', (user_id,))
+            conn.commit()
+            logger.info(f"[migrate_receive] Tables effacées pour user_id={user_id}")
+        else:
+            logger.info(f"[migrate_receive] Mode chunk — pas d'effacement")
 
         # ════════════════════════════════════════════════════════════════════
         # ÉTAPE 2 — INSÉRER par table, en batch (executemany)
@@ -3719,7 +3724,7 @@ def migrate_receive():
         return jsonify({'error': str(e)}), 500
     finally:
         cur.close()
-        conn.close()       
+        conn.close()
 
 # Lancer l'application
 if __name__ == '__main__':
